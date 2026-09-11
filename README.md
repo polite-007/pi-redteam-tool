@@ -11,11 +11,9 @@ Red team reconnaissance tools for [Pi Coding Agent](https://pi.dev).
 | [wx-article](extensions/wx-article) | `wx_article` | WeChat public article fetcher |
 | [bgp-lookup](extensions/bgp-lookup) | `bgp_lookup` | BGP/ASN lookup via BGPView API |
 | [dns-lookup](extensions/dns-lookup) | `dns_lookup` | DNS record query (A/AAAA/PTR/NS/MX/TXT/CNAME/SOA/SRV/CAA) |
-| [greynoise-lookup](extensions/greynoise-lookup) | `greynoise_lookup` | GreyNoise threat intelligence |
 | [httpx-probe](extensions/httpx-probe) | `httpx_probe` | HTTP probe with ProjectDiscovery httpx |
 | [passive-dns](extensions/passive-dns) | `passive_dns` | Passive DNS via crt.sh + SecurityTrails |
 | [whois-rdap](extensions/whois-rdap) | `whois_rdap` | WHOIS/RDAP domain registration lookup |
-| [finalize-result](extensions/finalize-result) | `finalize_result` | Result summarization and formatting |
 
 ## Installation
 
@@ -41,9 +39,6 @@ Configure via environment variables or `~/.pi/agent/settings.json`:
       "email": "your-email@example.com",
       "baseUrl": "https://fofa.info"
     },
-    "greynoise": {
-      "key": "your-greynoise-api-key"
-    },
     "httpx": {
       "binary": "/path/to/httpx",
       "proxy": "socks5://127.0.0.1:1080"
@@ -62,7 +57,6 @@ Configure via environment variables or `~/.pi/agent/settings.json`:
 | `REDTEAM_FOFA_KEY` | FOFA API key |
 | `REDTEAM_FOFA_EMAIL` | FOFA account email |
 | `REDTEAM_FOFA_BASE_URL` | FOFA API base URL (default: https://fofa.info) |
-| `REDTEAM_GREYNOISE_KEY` | GreyNoise API key |
 | `REDTEAM_HTTPX_BINARY` | Path to httpx binary |
 | `REDTEAM_HTTPX_PROXY` | HTTP proxy for httpx |
 | `REDTEAM_PASSIVE_DNS_KEY` | SecurityTrails API key |

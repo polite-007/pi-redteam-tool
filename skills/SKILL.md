@@ -58,14 +58,6 @@ Historical DNS data via crt.sh + SecurityTrails.
 Find all subdomains of example.com ever resolved
 ```
 
-### GreyNoise (`greynoise_lookup`)
-Threat intelligence about IP addresses.
-
-```bash
-# Check if IP is in GreyNoise
-Check 1.2.3.4 in threat intelligence
-```
-
 ### HTTPX Probe (`httpx_probe`)
 HTTP probing with ProjectDiscovery httpx.
 
@@ -77,16 +69,12 @@ Check HTTP headers and status for these URLs
 ### WeChat Article (`wx_article`)
 Fetch WeChat public account articles.
 
-### Finalize Result (`finalize_result`)
-Format and summarize tool results.
-
 ## Configuration
 
 Set API keys via environment variables:
 
 ```bash
 export REDTEAM_FOFA_KEY="your-fofa-key"
-export REDTEAM_GREYNOISE_KEY="your-greynoise-key"
 export REDTEAM_PASSIVE_DNS_KEY="your-securitytrails-key"
 ```
 
@@ -95,8 +83,7 @@ Or configure in `~/.pi/agent/settings.json`:
 ```json
 {
   "redteam": {
-    "fofa": { "key": "your-key" },
-    "greynoise": { "key": "your-key" }
+    "fofa": { "key": "your-key" }
   }
 }
 ```
