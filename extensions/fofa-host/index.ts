@@ -5,6 +5,9 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { readFileSync, existsSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 
 const DEFAULT_BASE = "https://fofa.info";
 const IPV4 =
@@ -16,14 +19,42 @@ interface FofaConfig {
   baseUrl: string;
 }
 
+/**
+ * Load FOFA config from environment variables or settings.json.
+ * Priority: REDTEAM_FOFA_* env vars > settings.json redteam.fofa.*
+ */
 function loadFofaConfig(): FofaConfig | null {
-  const key = process.env.REDTEAM_FOFA_KEY?.trim();
-  if (!key) return null;
-  return {
-    key,
-    email: process.env.REDTEAM_FOFA_EMAIL?.trim() || undefined,
-    baseUrl: process.env.REDTEAM_FOFA_BASE_URL?.trim() || DEFAULT_BASE,
-  };
+  // Environment variables (highest priority)
+  const envKey = process.env.REDTEAM_FOFA_KEY?.trim();
+  if (envKey) {
+    return {
+      key: envKey,
+      email: process.env.REDTEAM_FOFA_EMAIL?.trim() || undefined,
+      baseUrl: process.env.REDTEAM_FOFA_BASE_URL?.trim() || DEFAULT_BASE,
+    };
+  }
+
+  // settings.json: look for ~/.pi/agent/settings.json or PI_SETTINGS_PATH
+  const settingsPath = process.env.PI_SETTINGS_PATH || join(homedir(), ".pi", "agent", "settings.json");
+  try {
+    if (existsSync(settingsPath)) {
+      const content = readFileSync(settingsPath, "utf8");
+      const settings = JSON.parse(content);
+      const redteam = settings?.redteam;
+      const fofa = redteam?.fofa;
+      if (fofa?.key?.trim()) {
+        return {
+          key: fofa.key.trim(),
+          email: fofa.email?.trim() || undefined,
+          baseUrl: fofa.baseUrl?.trim() || DEFAULT_BASE,
+        };
+      }
+    }
+  } catch {
+    // Ignore errors reading settings.json
+  }
+
+  return null;
 }
 
 function stripPort(host: string): string {
