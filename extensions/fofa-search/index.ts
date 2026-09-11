@@ -139,7 +139,6 @@ function loadFofaConfig(): FofaConfig | null {
   // Environment variables (highest priority)
   const envKey = process.env.REDTEAM_FOFA_KEY?.trim();
   if (envKey) {
-    console.log("[fofa-search] Using FOFA key from env var");
     return {
       key: envKey,
       email: process.env.REDTEAM_FOFA_EMAIL?.trim() || undefined,
@@ -149,31 +148,24 @@ function loadFofaConfig(): FofaConfig | null {
 
   // settings.json: look for ~/.pi/agent/settings.json or PI_SETTINGS_PATH
   const settingsPath = process.env.PI_SETTINGS_PATH || join(homedir(), ".pi", "agent", "settings.json");
-  console.log("[fofa-search] Trying settings.json:", settingsPath);
   try {
     if (existsSync(settingsPath)) {
-      console.log("[fofa-search] settings.json exists, reading...");
       const content = readFileSync(settingsPath, "utf8");
       const settings = JSON.parse(content);
       const redteam = settings?.redteam;
       const fofa = redteam?.fofa;
-      console.log("[fofa-search] redteam.fofa:", JSON.stringify(fofa));
       if (fofa?.key?.trim()) {
-        console.log("[fofa-search] Using FOFA key from settings.json");
         return {
           key: fofa.key.trim(),
           email: fofa.email?.trim() || undefined,
           baseUrl: fofa.baseUrl?.trim() || DEFAULT_BASE,
         };
       }
-    } else {
-      console.log("[fofa-search] settings.json NOT found at path");
     }
-  } catch (err) {
-    console.error("[fofa-search] Error reading settings.json:", err);
+  } catch {
+    // Ignore errors reading settings.json
   }
 
-  console.log("[fofa-search] No FOFA config found");
   return null;
 }
 
