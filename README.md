@@ -24,7 +24,7 @@ pi install npm:@agegr/pi-redteam-tool
 Or from git:
 
 ```bash
-pi install git:github.com/agegr/pi-redteam-tool
+pi install git:github.com/polite-007/pi-redteam-tool
 ```
 
 ## Configuration
@@ -82,7 +82,7 @@ Or invoke via extension command:
 
 ```bash
 # Clone
-git clone https://github.com/agegr/pi-redteam-tool
+git clone https://github.com/polite-007/pi-redteam-tool
 cd pi-redteam-tool
 
 # Test single extension
