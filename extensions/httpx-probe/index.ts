@@ -8,6 +8,9 @@
 import { spawn } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { readFileSync, existsSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 
 const DEFAULT_UA = "pi-redteam-tool-httpx-probe/0.3";
 const DEFAULT_MAX_REDIRECTS = 10;
@@ -118,8 +121,31 @@ export function resolveHttpxBinary(): string {
   return process.env.REDTEAM_HTTPX_BINARY?.trim() || "httpx";
 }
 
+/**
+ * Load HTTPX proxy from environment variables or settings.json.
+ * Priority: REDTEAM_HTTPX_PROXY env var > settings.json redteam.httpx.proxy
+ */
 export function resolveHttpxProxy(): string | undefined {
-  return process.env.REDTEAM_HTTPX_PROXY?.trim() || undefined;
+  // Environment variable (highest priority)
+  const envProxy = process.env.REDTEAM_HTTPX_PROXY?.trim();
+  if (envProxy) return envProxy;
+
+  // settings.json: look for ~/.pi/agent/settings.json or PI_SETTINGS_PATH
+  const settingsPath = process.env.PI_SETTINGS_PATH || join(homedir(), ".pi", "agent", "settings.json");
+  try {
+    if (existsSync(settingsPath)) {
+      const content = readFileSync(settingsPath, "utf8");
+      const settings = JSON.parse(content);
+      const proxy = settings?.redteam?.httpx?.proxy;
+      if (typeof proxy === "string" && proxy.trim()) {
+        return proxy.trim();
+      }
+    }
+  } catch {
+    // Ignore errors reading settings.json
+  }
+
+  return undefined;
 }
 
 function flagOn(value: unknown, defaultOn: boolean): boolean {
