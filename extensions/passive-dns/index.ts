@@ -4,6 +4,9 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { readFileSync, existsSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 
 const IPV4 =
   /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
@@ -44,7 +47,26 @@ export function resolveTarget(input: string): {
 }
 
 export function loadSecurityTrailsKey(): string | undefined {
-  return process.env.REDTEAM_PASSIVE_DNS_KEY?.trim() || undefined;
+  // Environment variable (highest priority)
+  const envKey = process.env.REDTEAM_PASSIVE_DNS_KEY?.trim();
+  if (envKey) return envKey;
+
+  // settings.json: look for ~/.pi/agent/settings.json or PI_SETTINGS_PATH
+  const settingsPath = process.env.PI_SETTINGS_PATH || join(homedir(), ".pi", "agent", "settings.json");
+  try {
+    if (existsSync(settingsPath)) {
+      const content = readFileSync(settingsPath, "utf8");
+      const settings = JSON.parse(content);
+      const key = settings?.redteam?.passiveDns?.securityTrailsKey;
+      if (typeof key === "string" && key.trim()) {
+        return key.trim();
+      }
+    }
+  } catch {
+    // Ignore errors reading settings.json
+  }
+
+  return undefined;
 }
 
 function uniqSorted(items: string[], limit: number): string[] {
