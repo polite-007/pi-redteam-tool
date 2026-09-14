@@ -1,16 +1,15 @@
 # finalize_result
 
-Persist a JSON payload to a local file. This is a **write-side** helper —
-it never reads from the conversation or session history. Use it as the
-closing step of a task to materialise a structured result that downstream
-automation can consume.
+Persist a raw JSON payload to a local file. This is a **write-side**
+helper — it never reads from the conversation or session history. Use it
+as the closing step of a task to materialise a structured result that
+downstream automation can consume.
 
 ## Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `data` | any JSON | one of these | The payload to write. Any JSON-serialisable value: object, array, primitive. |
-| `source` | string | one of these | Alternative to `data`: text containing JSON. The tool extracts the first balanced value. |
+| `data` | any JSON | yes | The raw payload to persist. Any JSON-serialisable value: object, array, primitive. |
 | `path` | string | yes | Absolute path, or a path relative to the current working directory. Parent directories are created. |
 | `format` | `"json"` \| `"jsonl"` | no, default `"json"` | `jsonl` writes one JSON object per line and requires `data` to be an array. |
 | `indent` | number | no, default `2` | Indent for JSON output. `0` emits compact single-line. Ignored by `jsonl`. |
@@ -18,10 +17,9 @@ automation can consume.
 
 ## Behaviour
 
-1. Resolves the payload: uses `data` directly, or extracts the first balanced
-   JSON value from `source` (objects and arrays both supported).
+1. Takes `data` directly — no extraction or parsing.
 2. Serialises:
-   - `format=json` → `JSON.stringify(payload, null, indent)`
+   - `format=json` → `JSON.stringify(data, null, indent)`
    - `format=jsonl` → one `JSON.stringify(item)` per array element, newline-terminated.
 3. Creates parent directories if missing.
 4. Refuses to overwrite by default; pass `overwrite=true` to allow it.
@@ -37,7 +35,6 @@ automation can consume.
   "bytes": 1234,
   "replaced_existing": false,
   "records": 42,            // only for jsonl
-  "extracted_from_source": "…", // only when source was used
   "preview": "first 400 chars…"
 }
 ```
@@ -69,10 +66,11 @@ Write a newline-delimited stream from an array:
 }
 ```
 
-Extract JSON from LLM-emitted text:
+Compact single-line JSON (no whitespace):
 ```json
 {
   "path": "/tmp/result.json",
-  "source": "Here is the summary: {\"status\":\"ok\",\"count\":3}\n"
+  "data": { "status": "ok", "count": 3 },
+  "indent": 0
 }
 ```

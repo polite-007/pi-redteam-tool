@@ -52,7 +52,7 @@ function tmpDir() {
 test("registers the tool with expected metadata", () => {
   const tool = buildHarness();
   assert.equal(tool.name, "finalize_result");
-  assert.match(tool.description, /Persist a JSON payload to a local file/);
+  assert.match(tool.description, /Persist a raw JSON payload/);
   assert.equal(typeof tool.parameters, "object");
 });
 
@@ -68,7 +68,7 @@ test("writes data to a fresh path", async () => {
       undefined,
       {},
     );
-    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
+    const payload = JSON.parse(/** @type {{ content: Array<{ text: string }> }} */ (result.content)[0].text);
     assert.equal(payload.path, target);
     assert.equal(payload.format, "json");
     assert.ok(payload.bytes > 0);
@@ -84,63 +84,21 @@ test("writes data to a fresh path", async () => {
   }
 });
 
-test("extracts JSON value from source when data is omitted", async () => {
-  const tool = buildHarness();
-  const dir = tmpDir();
-  try {
-    const target = join(dir, "from-source.json");
-    const result = await tool.execute(
-      "tc-2",
-      { path: target, source: 'Here is the answer:\n{"answer":42,"items":["a","b"]}\nDone.' },
-      undefined,
-      undefined,
-      {},
-    );
-    const onDisk = JSON.parse(readFileSync(target, "utf8"));
-    assert.deepEqual(onDisk, { answer: 42, items: ["a", "b"] });
-
-    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
-    assert.ok(payload.extracted_from_source);
-    assert.equal(payload.bytes, JSON.stringify({ answer: 42, items: ["a", "b"] }, null, 2).length);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("extracts top-level array from source", async () => {
-  const tool = buildHarness();
-  const dir = tmpDir();
-  try {
-    const target = join(dir, "arr.json");
-    const result = await tool.execute(
-      "tc-3",
-      { path: target, source: 'prefix [{"a":1},{"b":2}] suffix' },
-      undefined,
-      undefined,
-      {},
-    );
-    const onDisk = JSON.parse(readFileSync(target, "utf8"));
-    assert.deepEqual(onDisk, [{ a: 1 }, { b: 2 }]);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("creates parent directories", async () => {
   const tool = buildHarness();
   const dir = tmpDir();
   try {
     const target = join(dir, "deep", "nested", "out.json");
-    const result = await tool.execute(
-      "tc-4",
+    await tool.execute(
+      "tc-2",
       { path: target, data: { ok: true } },
       undefined,
       undefined,
       {},
     );
     assert.ok(existsSync(target));
-    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
-    assert.equal(payload.path, target);
+    const onDisk = JSON.parse(readFileSync(target, "utf8"));
+    assert.deepEqual(onDisk, { ok: true });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -151,7 +109,6 @@ test("refuses to overwrite by default", async () => {
   const dir = tmpDir();
   try {
     const target = join(dir, "out.json");
-    // seed the file
     await tool.execute(
       "tc-seed",
       { path: target, data: { v: 1 } },
@@ -160,7 +117,7 @@ test("refuses to overwrite by default", async () => {
       {},
     );
     await assert.rejects(
-      () => tool.execute("tc-5", { path: target, data: { v: 2 } }, undefined, undefined, {}),
+      () => tool.execute("tc-3", { path: target, data: { v: 2 } }, undefined, undefined, {}),
       /already exists/,
     );
     // existing content untouched
@@ -183,13 +140,13 @@ test("overwrites when overwrite=true", async () => {
       {},
     );
     const result = await tool.execute(
-      "tc-6",
+      "tc-4",
       { path: target, data: { v: 2 }, overwrite: true },
       undefined,
       undefined,
       {},
     );
-    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
+    const payload = JSON.parse(/** @type {{ content: Array<{ text: string }> }} */ (result.content)[0].text);
     assert.equal(payload.replaced_existing, true);
     assert.deepEqual(JSON.parse(readFileSync(target, "utf8")), { v: 2 });
   } finally {
@@ -204,7 +161,7 @@ test("writes JSONL with one record per line", async () => {
     const target = join(dir, "stream.jsonl");
     const items = [{ a: 1 }, { a: 2 }, { a: 3 }];
     const result = await tool.execute(
-      "tc-7",
+      "tc-5",
       { path: target, data: items, format: "jsonl" },
       undefined,
       undefined,
@@ -214,7 +171,7 @@ test("writes JSONL with one record per line", async () => {
     const lines = onDisk.split("\n").filter((l) => l.length > 0);
     assert.equal(lines.length, 3);
     assert.deepEqual(lines.map((l) => JSON.parse(l)), items);
-    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
+    const payload = JSON.parse(/** @type {{ content: Array<{ text: string }> }} */ (result.content)[0].text);
     assert.equal(payload.format, "jsonl");
     assert.equal(payload.records, 3);
   } finally {
@@ -227,7 +184,7 @@ test("rejects JSONL on non-array data", async () => {
   await assert.rejects(
     () =>
       tool.execute(
-        "tc-8",
+        "tc-6",
         { path: "/tmp/x.jsonl", data: { not: "array" }, format: "jsonl" },
         undefined,
         undefined,
@@ -243,7 +200,7 @@ test("honours indent=0 for compact output", async () => {
   try {
     const target = join(dir, "compact.json");
     await tool.execute(
-      "tc-9",
+      "tc-7",
       { path: target, data: { a: 1, b: 2 }, indent: 0 },
       undefined,
       undefined,
@@ -256,27 +213,52 @@ test("honours indent=0 for compact output", async () => {
   }
 });
 
-test("throws when neither data nor source is provided", async () => {
+test("preserves deeply nested objects", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "nested.json");
+    const payload = { a: { b: { c: [1, 2, { d: "x" }] } }, e: null, f: true };
+    await tool.execute("tc-8", { path: target, data: payload }, undefined, undefined, {});
+    const onDisk = JSON.parse(readFileSync(target, "utf8"));
+    assert.deepEqual(onDisk, payload);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writes top-level arrays", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "arr.json");
+    await tool.execute(
+      "tc-9",
+      { path: target, data: [{ a: 1 }, { b: 2 }] },
+      undefined,
+      undefined,
+      {},
+    );
+    const onDisk = JSON.parse(readFileSync(target, "utf8"));
+    assert.deepEqual(onDisk, [{ a: 1 }, { b: 2 }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("throws when data is omitted", async () => {
   const tool = buildHarness();
   await assert.rejects(
-    () =>
-      tool.execute("tc-10", { path: "/tmp/x.json" }, undefined, undefined, {}),
-    /provide either/,
+    () => tool.execute("tc-10", { path: "/tmp/x.json" }, undefined, undefined, {}),
+    /`data` is required/,
   );
 });
 
-test("throws when source has no JSON value", async () => {
+test("throws when path is omitted", async () => {
   const tool = buildHarness();
   await assert.rejects(
-    () =>
-      tool.execute(
-        "tc-11",
-        { path: "/tmp/x.json", source: "no braces here" },
-        undefined,
-        undefined,
-        {},
-      ),
-    /no JSON value/,
+    () => tool.execute("tc-11", { data: { ok: true } }, undefined, undefined, {}),
+    /path/,
   );
 });
 
@@ -297,42 +279,19 @@ test("honours pre-aborted signal", async () => {
   );
 });
 
-test("string-boundary skipping survives braces inside string literals", async () => {
-  const tool = buildHarness();
-  const dir = tmpDir();
-  try {
-    const target = join(dir, "out.json");
-    await tool.execute(
-      "tc-13",
-      {
-        path: target,
-        source: 'Note: use {"k":"v} which has braces in a string"} outer {"answer":"yes"}',
-      },
-      undefined,
-      undefined,
-      {},
-    );
-    const onDisk = JSON.parse(readFileSync(target, "utf8"));
-    // First balanced value is the inner object containing the brace string
-    assert.deepEqual(onDisk, { k: "v} which has braces in a string" });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("returns byte count matching on-disk size", async () => {
   const tool = buildHarness();
   const dir = tmpDir();
   try {
     const target = join(dir, "out.json");
     const result = await tool.execute(
-      "tc-14",
+      "tc-13",
       { path: target, data: { hello: "world" } },
       undefined,
       undefined,
       {},
     );
-    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
+    const payload = JSON.parse(/** @type {{ content: Array<{ text: string }> }} */ (result.content)[0].text);
     const stat = statSync(target);
     assert.equal(payload.bytes, stat.size);
   } finally {

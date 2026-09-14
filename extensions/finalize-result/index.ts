@@ -1,21 +1,21 @@
 /**
  * finalize_result — persist a JSON payload to a local file.
  *
- * The tool receives a JSON payload directly from the caller (or parses one
- * from `source` text), then writes it to disk at a caller-chosen path. The
- * return value echoes what was written so the LLM can confirm the result.
+ * The tool receives a JSON payload via the `data` parameter (any
+ * JSON-serialisable value) and writes it to disk at a caller-chosen path.
+ * The return value echoes what was written so the LLM can confirm the
+ * result.
  *
  * Behaviour:
- *   - `data` (object/array) and `path` (absolute file path) are required.
- *   - `source` is an alternative to `data`: a text string containing a JSON
- *     value that the tool will brace-match and parse before writing.
+ *   - `data` (object/array/scalar) and `path` (absolute file path) are
+ *     required. `data` is the raw JSON to persist.
  *   - `format` selects JSON (default, pretty-printed) or JSONL (one object
  *     per line — useful when `data` is an array).
+ *   - `indent` controls JSON pretty-printing; `0` emits compact output.
  *   - `overwrite=false` (default) refuses to clobber an existing file;
  *     pass `true` to allow replacing an existing path.
  *
- * The tool never reads from the session; this is a write-side helper, not a
- * conversation extractor.
+ * The tool never reads from the session; this is a write-side helper.
  */
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -26,19 +26,13 @@ const FINALIZE_TOOL_NAME = "finalize_result";
 
 const Parameters = Type.Object({
   /**
-   * The JSON payload to persist. Either this or `source` must be provided.
-   * Accepts any JSON-serialisable value: object, array, primitive.
+   * The raw JSON payload to persist. Any JSON-serialisable value: object,
+   * array, primitive. Required.
    */
-  data: Type.Optional(Type.Unknown()),
-  /**
-   * Alternative to `data`: a text string containing JSON. The tool extracts
-   * the first balanced top-level JSON value and writes that. Useful when the
-   * caller wants the tool to parse LLM-emitted text directly.
-   */
-  source: Type.Optional(Type.String()),
+  data: Type.Unknown(),
   /**
    * Absolute (or process-cwd-relative) filesystem path to write to.
-   * Parent directories are created if missing.
+   * Parent directories are created if missing. Required.
    */
   path: Type.String({ description: "Absolute file path to write the JSON payload to." }),
   /**
@@ -62,76 +56,16 @@ const Parameters = Type.Object({
 
 type Parameters = Static<typeof Parameters>;
 
-/**
- * Brace-balanced extractor for any JSON value (object, array, or scalar).
- * Tracks nesting for both `{` / `}` and `[` / `]` and skips string literals
- * with the same escape rules as the original tool. Returns the longest
- * balanced prefix starting at the first opener, or null if none balances.
- */
-function extractFirstJsonValue(text: string): { value: unknown; raw: string } | null {
-  // Find the first JSON opener
-  let start = -1;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (c === "{" || c === "[") {
-      start = i;
-      break;
-    }
-  }
-  if (start < 0) return null;
-
-  const openCh = text[start];
-  const closeCh = openCh === "{" ? "}" : "]";
-  // Track the opposing bracket too so a stray }/] inside doesn't pop us out.
-  // Stack pushes only the matching pair; depth counts the primary opener.
-  let depth = 0;
-  let i = start;
-  while (i < text.length) {
-    const c = text[i];
-    if (c === '"' || c === "'") {
-      const close = c;
-      i++;
-      while (i < text.length && text[i] !== close) {
-        if (text[i] === "\\") i++;
-        i++;
-      }
-      i++;
-      continue;
-    }
-    if (c === "{") {
-      if (openCh === "{" || depth > 0) depth++;
-    } else if (c === "[") {
-      if (openCh === "[" || depth > 0) depth++;
-    } else if (c === "}") {
-      if (openCh === "{" || depth > 0) depth--;
-    } else if (c === "]") {
-      if (openCh === "[" || depth > 0) depth--;
-    }
-    // Check balanced
-    if (depth === 0 && i > start) {
-      const raw = text.slice(start, i + 1);
-      try {
-        const value = JSON.parse(raw);
-        return { value, raw };
-      } catch {
-        return null;
-      }
-    }
-    i++;
-  }
-  return null;
-}
-
 export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: FINALIZE_TOOL_NAME,
     label: "Finalize Result",
     description:
-      "Persist a JSON payload to a local file. Pass the payload via `data` (any JSON value) or `source` (text containing JSON to be extracted). Writes to `path`, creating parent directories. Returns the parsed value, the path, and a byte count.",
+      "Persist a raw JSON payload (`data`) to a local file at `path`. Use `format=jsonl` for newline-delimited streams. Returns the path, byte count, and (for jsonl) record count.",
     parameters: Parameters,
     promptGuidelines: [
       "Use this tool to materialise task results to disk so downstream automation can consume them.",
-      "Prefer `data` when the payload is already structured; use `source` only when parsing LLM-emitted text.",
+      "Pass the payload directly via `data` — no extraction needed.",
       "Set `overwrite=true` if intentionally replacing an existing artefact.",
     ],
     async execute(_toolCallId, params: Parameters, signal, _onUpdate, _ctx) {
@@ -139,24 +73,11 @@ export default function (pi: ExtensionAPI): void {
         throw new Error("finalize_result: aborted");
       }
 
-      if (params.data === undefined && (params.source === undefined || !params.source.trim())) {
-        throw new Error("finalize_result: provide either `data` or `source`");
+      if (params.data === undefined) {
+        throw new Error("finalize_result: `data` is required");
       }
 
-      let payload: unknown;
-      let sourceText: string | undefined;
-
-      if (params.source !== undefined && params.source.trim()) {
-        const extracted = extractFirstJsonValue(params.source);
-        if (!extracted) {
-          throw new Error("finalize_result: no JSON value found in `source`");
-        }
-        payload = extracted.value;
-        sourceText = extracted.raw;
-      } else {
-        payload = params.data;
-      }
-
+      const payload = params.data;
       const targetPath = isAbsolute(params.path) ? params.path : resolve(process.cwd(), params.path);
       const format = (params.format ?? "json") as "json" | "jsonl";
       const indent = params.indent ?? 2;
@@ -188,8 +109,6 @@ export default function (pi: ExtensionAPI): void {
 
       let replacedExisting = false;
       try {
-        // Probe existing file: ENOENT means path is clear.
-        // If overwrite is false and file exists, throw BEFORE writing.
         const fs = await import("node:fs");
         try {
           await fs.promises.access(targetPath);
@@ -217,7 +136,6 @@ export default function (pi: ExtensionAPI): void {
         replaced_existing: replacedExisting,
       };
       if (recordCount !== undefined) result.records = recordCount;
-      if (sourceText !== undefined) result.extracted_from_source = sourceText;
       result.preview = body.length > 400 ? `${body.slice(0, 400)}…` : body;
 
       return {
