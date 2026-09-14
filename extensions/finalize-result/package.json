@@ -1,0 +1,6 @@
+{
+  "name": "finalize-result",
+  "version": "1.0.0",
+  "description": "Extract a structured JSON object from the conversation's final assistant message. Used as the closing step of a task pipeline so downstream consumers always receive a parseable result.",
+  "private": true
+}

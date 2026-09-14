@@ -14,6 +14,7 @@ Red team reconnaissance tools for [Pi Coding Agent](https://pi.dev).
 | [httpx-probe](extensions/httpx-probe) | `httpx_probe` | HTTP probe with ProjectDiscovery httpx |
 | [passive-dns](extensions/passive-dns) | `passive_dns` | Passive DNS via crt.sh + SecurityTrails |
 | [whois-rdap](extensions/whois-rdap) | `whois_rdap` | WHOIS/RDAP domain registration lookup |
+| [finalize-result](extensions/finalize-result) | `finalize_result` | Extract a structured JSON object from the conversation's final assistant message |
 
 ## Installation
 
