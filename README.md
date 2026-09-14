@@ -19,7 +19,7 @@ Red team reconnaissance tools for [Pi Coding Agent](https://pi.dev).
 ## Installation
 
 ```bash
-pi install npm:@agegr/pi-redteam-tool
+pi install npm:@polite-007/pi-redteam-tool
 ```
 
 Or from git:

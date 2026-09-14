@@ -1,16 +1,16 @@
 {
-  "name": "@agegr/pi-redteam-tool",
-  "version": "0.1.0",
+  "name": "@polite-007/pi-redteam-tool",
+  "version": "0.3.1",
   "description": "Red team tools for Pi Coding Agent: OSINT, network reconnaissance, and asset discovery",
   "keywords": ["pi-package", "pi-extension", "red-team", "osint", "security"],
   "license": "MIT",
-  "homepage": "https://github.com/agegr/pi-redteam-tool#readme",
+  "homepage": "https://github.com/polite-007/pi-redteam-tool#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agegr/pi-redteam-tool.git"
+    "url": "git+https://github.com/polite-007/pi-redteam-tool.git"
   },
   "bugs": {
-    "url": "https://github.com/agegr/pi-redteam-tool/issues"
+    "url": "https://github.com/polite-007/pi-redteam-tool/issues"
   },
   "pi": {
     "extensions": ["./extensions"],
