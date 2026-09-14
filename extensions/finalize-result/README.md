@@ -10,20 +10,31 @@ downstream automation can consume.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `data` | any JSON | yes | The raw payload to persist. Any JSON-serialisable value: object, array, primitive. |
-| `path` | string | yes | Absolute path, or a path relative to the current working directory. Parent directories are created. |
+| `path` | string | no | Output file path. Defaults to `<cwd>/finalize-result/<session-id>.json` (the session id is sanitised for safe filenames; falls back to a UTC timestamp if no session id is available). |
 | `format` | `"json"` \| `"jsonl"` | no, default `"json"` | `jsonl` writes one JSON object per line and requires `data` to be an array. |
 | `indent` | number | no, default `2` | Indent for JSON output. `0` emits compact single-line. Ignored by `jsonl`. |
 | `overwrite` | boolean | no, default `false` | When `false`, the tool refuses to replace an existing file. |
 
+## Default output location
+
+When `path` is omitted, the tool writes to:
+
+```
+<process cwd>/finalize-result/<session-id>.json
+```
+
+The default directory is created automatically. The session id is taken from the active Pi session (`ctx.sessionManager.getSessionId()`) and sanitised to strip characters that aren't safe in filenames (`<`, `>`, `:`, `"`, `|`, `?`, `*`, control characters, path separators). If no session id is available, a UTC timestamp (`YYYY-MM-DDTHH-MM-SS-mmmZ`) is used as the filename instead.
+
 ## Behaviour
 
-1. Takes `data` directly — no extraction or parsing.
-2. Serialises:
+1. Resolves the output path: explicit `path` wins, otherwise the default per-session location.
+2. Takes `data` directly — no extraction or parsing.
+3. Serialises:
    - `format=json` → `JSON.stringify(data, null, indent)`
    - `format=jsonl` → one `JSON.stringify(item)` per array element, newline-terminated.
-3. Creates parent directories if missing.
-4. Refuses to overwrite by default; pass `overwrite=true` to allow it.
-5. Returns the resolved path, byte count, and (for jsonl) the record count.
+4. Creates parent directories if missing.
+5. Refuses to overwrite by default; pass `overwrite=true` to allow it.
+6. Returns the resolved path, byte count, and (for jsonl) the record count.
 
 ## Return shape
 
@@ -41,7 +52,7 @@ downstream automation can consume.
 
 ## Examples
 
-Write a structured report:
+Write to a specific file:
 ```json
 {
   "path": "/tmp/osint/example.com.json",
@@ -54,7 +65,18 @@ Write a structured report:
 }
 ```
 
-Write a newline-delimited stream from an array:
+Write to the default per-session location (omit `path`):
+```json
+{
+  "data": {
+    "domain": "example.com",
+    "open_ports": [80, 443]
+  }
+}
+```
+→ lands at `<cwd>/finalize-result/<session-id>.json`
+
+Write a newline-delimited stream:
 ```json
 {
   "path": "/tmp/osint/example.com.jsonl",

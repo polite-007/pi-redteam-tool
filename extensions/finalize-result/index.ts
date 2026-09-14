@@ -7,18 +7,23 @@
  * result.
  *
  * Behaviour:
- *   - `data` (object/array/scalar) and `path` (absolute file path) are
- *     required. `data` is the raw JSON to persist.
- *   - `format` selects JSON (default, pretty-printed) or JSONL (one object
- *     per line — useful when `data` is an array).
+ *   - `data` (object/array/scalar) is required. It is the raw JSON to
+ *     persist.
+ *   - `path` defaults to `<cwd>/finalize-result/<session-id>.json` when
+ *     omitted. The `<session-id>` is taken from the active Pi session
+ *     (via `ctx.sessionManager.getSessionId()`); if unavailable, a UTC
+ *     timestamp is used instead. An explicit `path` always wins.
+ *   - `format` selects JSON (default, pretty-printed) or JSONL (one
+ *     object per line — useful when `data` is an array).
  *   - `indent` controls JSON pretty-printing; `0` emits compact output.
  *   - `overwrite=false` (default) refuses to clobber an existing file;
  *     pass `true` to allow replacing an existing path.
  *
- * The tool never reads from the session; this is a write-side helper.
+ * The tool never reads from the session content; it only borrows the
+ * session id for naming the default output file.
  */
 import { writeFileSync, mkdirSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve, join } from "node:path";
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -31,10 +36,11 @@ const Parameters = Type.Object({
    */
   data: Type.Unknown(),
   /**
-   * Absolute (or process-cwd-relative) filesystem path to write to.
-   * Parent directories are created if missing. Required.
+   * Output path. When omitted, the tool writes to
+   * `<cwd>/finalize-result/<session-id>.json`. The default directory is
+   * created automatically.
    */
-  path: Type.String({ description: "Absolute file path to write the JSON payload to." }),
+  path: Type.Optional(Type.String({ description: "Output file path. Defaults to <cwd>/finalize-result/<session-id>.json." })),
   /**
    * Output format. "json" pretty-prints with 2-space indent (set `indent=0`
    * for compact). "jsonl" writes one JSON object per line and requires
@@ -56,19 +62,39 @@ const Parameters = Type.Object({
 
 type Parameters = Static<typeof Parameters>;
 
+/** Sanitise a session id so it's safe as a filename component. */
+function safeFileStem(raw: string | undefined): string {
+  if (!raw) return "";
+  // Strip path separators and characters Windows / POSIX both reject.
+  return raw.replace(/[<>:"|?*\x00-\x1f\/\\]+/g, "_").replace(/^\.+/, "_");
+}
+
+/**
+ * Build the default output path: <cwd>/finalize-result/<session-id>.json.
+ * Falls back to a UTC timestamp when no session id is available.
+ */
+function defaultPath(ctx: unknown): string {
+  const sessionId = safeFileStem(
+    (ctx as { sessionManager?: { getSessionId?: () => unknown } })?.sessionManager?.getSessionId?.() as string | undefined,
+  );
+  const stem = sessionId || new Date().toISOString().replace(/[:.]/g, "-");
+  return join(process.cwd(), "finalize-result", `${stem}.json`);
+}
+
 export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: FINALIZE_TOOL_NAME,
     label: "Finalize Result",
     description:
-      "Persist a raw JSON payload (`data`) to a local file at `path`. Use `format=jsonl` for newline-delimited streams. Returns the path, byte count, and (for jsonl) record count.",
+      "Persist a raw JSON payload (`data`) to a local file. When `path` is omitted, the tool writes to `<cwd>/finalize-result/<session-id>.json`. Returns the path, byte count, and (for jsonl) record count.",
     parameters: Parameters,
     promptGuidelines: [
       "Use this tool to materialise task results to disk so downstream automation can consume them.",
+      "Omit `path` to use the default per-session output location; only pass `path` when you need to write to a specific file.",
       "Pass the payload directly via `data` — no extraction needed.",
       "Set `overwrite=true` if intentionally replacing an existing artefact.",
     ],
-    async execute(_toolCallId, params: Parameters, signal, _onUpdate, _ctx) {
+    async execute(_toolCallId, params: Parameters, signal, _onUpdate, ctx) {
       if (signal?.aborted) {
         throw new Error("finalize_result: aborted");
       }
@@ -78,7 +104,9 @@ export default function (pi: ExtensionAPI): void {
       }
 
       const payload = params.data;
-      const targetPath = isAbsolute(params.path) ? params.path : resolve(process.cwd(), params.path);
+      const targetPath = params.path && params.path.trim()
+        ? (isAbsolute(params.path) ? params.path : resolve(process.cwd(), params.path))
+        : defaultPath(ctx);
       const format = (params.format ?? "json") as "json" | "jsonl";
       const indent = params.indent ?? 2;
 

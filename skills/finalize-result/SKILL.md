@@ -12,22 +12,32 @@ description: 把任意 JSON 数据通过 `data` 参数直接写入本地文件�
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | data | any JSON | ✅ | 要落盘的原始数据（对象 / 数组 / 标量都可） |
-| path | string | ✅ | 绝对路径或相对 cwd 的路径，父目录自动创建 |
+| path | string |  | 输出路径。省略时默认 `<cwd>/finalize-result/<session-id>.json` |
 | format | `json` \| `jsonl` |  | 默认 `json`；`jsonl` 要求 data 是数组，一行一条记录 |
 | indent | number |  | 默认 2，`0` 表示紧凑无缩进；jsonl 忽略 |
 | overwrite | boolean |  | 默认 `false`，已存在则拒绝写入；设为 `true` 允许覆盖 |
 
+## 默认输出位置
+
+不传 `path` 时，工具写到：
+
+```
+<process cwd>/finalize-result/<session-id>.json
+```
+
+目录会自动创建。`<session-id>` 取自当前 Pi session（`ctx.sessionManager.getSessionId()`），会自动清理文件名非法字符（`<`, `>`, `:`, `"`, `|`, `?`, `*`, 控制字符、路径分隔符）。无 session id 时用 UTC 时间戳（`YYYY-MM-DDTHH-MM-SS-mmmZ`）兜底。
+
 ## 示例
 
 ```bash
-# 把侦察报告落盘
+# 把侦察报告落到指定路径
 Save the asset list to /tmp/osint/example.com.json
+
+# 不传 path：用默认的 <cwd>/finalize-result/<session-id>.json
+Save the asset list
 
 # 写出 JSONL 流
 Save these findings as JSONL to /tmp/findings.jsonl
-
-# 紧凑输出
-Save compact result to /tmp/result.json with indent=0
 ```
 
 ## 调用示例

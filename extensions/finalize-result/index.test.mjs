@@ -249,17 +249,88 @@ test("writes top-level arrays", async () => {
 test("throws when data is omitted", async () => {
   const tool = buildHarness();
   await assert.rejects(
-    () => tool.execute("tc-10", { path: "/tmp/x.json" }, undefined, undefined, {}),
+    () => tool.execute("tc-10", {}, undefined, undefined, {}),
     /`data` is required/,
   );
 });
 
-test("throws when path is omitted", async () => {
+test("uses default path under cwd/finalize-result/<session-id>.json when path omitted", async () => {
   const tool = buildHarness();
-  await assert.rejects(
-    () => tool.execute("tc-11", { data: { ok: true } }, undefined, undefined, {}),
-    /path/,
-  );
+  const dir = tmpDir();
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    const ctx = {
+      sessionManager: { getSessionId: () => "sess-abc-123" },
+    };
+    const result = await tool.execute(
+      "tc-11",
+      { data: { ok: true } },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const payload = JSON.parse(/** @type {{ content: Array<{ text: string }> }} */ (result.content)[0].text);
+    assert.equal(
+      payload.path,
+      join(dir, "finalize-result", "sess-abc-123.json"),
+    );
+    assert.ok(existsSync(payload.path));
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("falls back to UTC timestamp when session id is unavailable", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    const result = await tool.execute(
+      "tc-12",
+      { data: { ok: true } },
+      undefined,
+      undefined,
+      {},
+    );
+    const payload = JSON.parse(/** @type {{ content: Array<{ text: string }> }} */ (result.content)[0].text);
+    assert.ok(payload.path.startsWith(join(dir, "finalize-result")), payload.path);
+    assert.match(payload.path, /\.json$/);
+    // No session id → stem is an ISO-derived timestamp, not a literal "<session-id>".
+    assert.ok(!payload.path.endsWith("undefined.json"));
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sanitises unsafe characters in session id used for filename", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    const ctx = {
+      sessionManager: { getSessionId: () => 'a/b\\c:d*e?"f' },
+    };
+    const result = await tool.execute(
+      "tc-13",
+      { data: { ok: true } },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const payload = JSON.parse(/** @type {{ content: Array<{ text: string }> }} */ (result.content)[0].text);
+    assert.ok(payload.path.endsWith(".json"));
+    // The unsafe characters are replaced with underscores; no separators leak through.
+    assert.ok(!payload.path.includes("/b/"), payload.path);
+    assert.ok(!payload.path.includes("\\c"), payload.path);
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("honours pre-aborted signal", async () => {
