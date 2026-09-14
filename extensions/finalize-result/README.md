@@ -1,47 +1,78 @@
 # finalize_result
 
-Extract a structured JSON object from the conversation. Used as the closing
-step of a task pipeline so downstream consumers always receive a parseable
-result.
-
-## When to call
-
-Call this tool **last** in any task whose result needs to be consumed by
-another system. The tool:
-
-1. Reads the last assistant message from the active session (or uses the
-   `source` parameter if provided).
-2. Brace-matches the first `{ ... }` block, skipping over string literals.
-3. Returns the parsed object as the tool result, with the raw text preserved
-   under `text`.
-
-If no JSON object is found the tool throws, allowing the LLM to either retry
-or surface the failure.
+Persist a JSON payload to a local file. This is a **write-side** helper —
+it never reads from the conversation or session history. Use it as the
+closing step of a task to materialise a structured result that downstream
+automation can consume.
 
 ## Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `source` | string | optional | Explicit text to scan. When omitted, the last assistant message in the active session is used. |
-| `label` | string | optional | A short label forwarded to the result metadata and the UI notification. |
+| `data` | any JSON | one of these | The payload to write. Any JSON-serialisable value: object, array, primitive. |
+| `source` | string | one of these | Alternative to `data`: text containing JSON. The tool extracts the first balanced value. |
+| `path` | string | yes | Absolute path, or a path relative to the current working directory. Parent directories are created. |
+| `format` | `"json"` \| `"jsonl"` | no, default `"json"` | `jsonl` writes one JSON object per line and requires `data` to be an array. |
+| `indent` | number | no, default `2` | Indent for JSON output. `0` emits compact single-line. Ignored by `jsonl`. |
+| `overwrite` | boolean | no, default `false` | When `false`, the tool refuses to replace an existing file. |
 
-## Result shape
+## Behaviour
 
-The tool returns:
+1. Resolves the payload: uses `data` directly, or extracts the first balanced
+   JSON value from `source` (objects and arrays both supported).
+2. Serialises:
+   - `format=json` → `JSON.stringify(payload, null, indent)`
+   - `format=jsonl` → one `JSON.stringify(item)` per array element, newline-terminated.
+3. Creates parent directories if missing.
+4. Refuses to overwrite by default; pass `overwrite=true` to allow it.
+5. Returns the resolved path, byte count, and (for jsonl) the record count.
+
+## Return shape
 
 ```json
 {
-  "text": "...raw assistant text...",
-  "result": { "...": "parsed JSON object" },
-  "label": "optional label"
+  "path": "/abs/path/to/file.json",
+  "absolute_path": "/abs/path/to/file.json",
+  "format": "json",
+  "bytes": 1234,
+  "replaced_existing": false,
+  "records": 42,            // only for jsonl
+  "extracted_from_source": "…", // only when source was used
+  "preview": "first 400 chars…"
 }
 ```
 
-The `details` field on the tool call carries the same `result` object so the
-runtime can attach it to the assistant message.
+## Examples
 
-## UI notification
+Write a structured report:
+```json
+{
+  "path": "/tmp/osint/example.com.json",
+  "data": {
+    "domain": "example.com",
+    "asn": "AS15169",
+    "country": "US",
+    "open_ports": [80, 443]
+  }
+}
+```
 
-If a UI surface is present, the tool posts a notification with title
-`finalize_result` (or `finalize_result: <label>`) so the front-end can
-refresh any pending task panel.
+Write a newline-delimited stream from an array:
+```json
+{
+  "path": "/tmp/osint/example.com.jsonl",
+  "format": "jsonl",
+  "data": [
+    { "ip": "1.2.3.4", "port": 80 },
+    { "ip": "1.2.3.4", "port": 443 }
+  ]
+}
+```
+
+Extract JSON from LLM-emitted text:
+```json
+{
+  "path": "/tmp/result.json",
+  "source": "Here is the summary: {\"status\":\"ok\",\"count\":3}\n"
+}
+```

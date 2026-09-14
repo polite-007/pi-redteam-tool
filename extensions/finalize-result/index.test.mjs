@@ -1,22 +1,21 @@
 /**
- * Tests for the finalize_result extension tool.
+ * Tests for the finalize_result extension tool (write-to-disk variant).
  *
  * Run with: `node --test extensions/finalize-result/index.test.mjs`
  *
- * Type hints are inlined as JSDoc — this file stays `.mjs` so the test
- * runner can load it directly.
+ * JSDoc-typed harness; file stays `.mjs` so the runner can load it.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, existsSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import finalize from "./index.ts";
 
 /**
  * @typedef {import('@earendil-works/pi-coding-agent').ExtensionAPI} ExtensionAPI
- * @typedef {import('@earendil-works/pi-coding-agent').SessionMessageEntry} SessionMessageEntry
- */
-
-/**
+ *
  * @typedef {{
  *   name: string;
  *   description: string;
@@ -30,28 +29,10 @@ import finalize from "./index.ts";
  *   ) => Promise<unknown>;
  * }} CapturedTool
  *
- * @typedef {{
- *   sessionManager?: { getEntries(): unknown[] };
- *   ui?: { notify?: (payload: unknown) => void };
- * }} ToolContext
+ * @typedef {{}} ToolContext
  */
 
-function buildHarness(opts = {}) {
-  /** @type {{ notify?: unknown }} */
-  const calls = {};
-  /** @type {ToolContext} */
-  const ctx = {};
-  if (opts.entries !== undefined) {
-    ctx.sessionManager = { getEntries: () => opts.entries ?? [] };
-  }
-  if (opts.notify) {
-    ctx.ui = {
-      notify: (payload) => {
-        calls.notify = payload;
-      },
-    };
-  }
-
+function buildHarness() {
   /** @type {CapturedTool | null} */
   let captured = null;
   const pi = {
@@ -59,137 +40,302 @@ function buildHarness(opts = {}) {
       captured = tool;
     },
   };
-
   finalize(/** @type {ExtensionAPI} */ (pi));
   if (!captured) throw new Error("finalize_result: registerTool was never called");
-  return { tool: /** @type {CapturedTool} */ (captured), calls, ctx };
+  return /** @type {CapturedTool} */ (captured);
 }
 
-function assistantEntry(text) {
-  return {
-    type: "message",
-    timestamp: new Date().toISOString(),
-    message: {
-      role: "assistant",
-      content: [{ type: "text", text }],
-      timestamp: new Date().toISOString(),
-    },
-  };
+function tmpDir() {
+  return mkdtempSync(join(tmpdir(), "finalize-result-"));
 }
 
 test("registers the tool with expected metadata", () => {
-  const { tool } = buildHarness();
+  const tool = buildHarness();
   assert.equal(tool.name, "finalize_result");
-  assert.match(tool.description, /Extract a structured JSON object/);
+  assert.match(tool.description, /Persist a JSON payload to a local file/);
   assert.equal(typeof tool.parameters, "object");
 });
 
-test("extracts JSON from explicit source", async () => {
-  const { tool, ctx } = buildHarness();
-  const text = 'Here is the answer:\n{"answer":42,"items":["a","b"]}\nDone.';
-  const result = await tool.execute(
-    "tc-1",
-    { source: text },
-    undefined,
-    undefined,
-    ctx,
-  );
-  const payload = JSON.parse(result.content[0].text);
-  assert.deepEqual(payload.result, { answer: 42, items: ["a", "b"] });
-  assert.equal(payload.text, text);
-  assert.deepEqual(result.details, { answer: 42, items: ["a", "b"] });
+test("writes data to a fresh path", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "out.json");
+    const result = await tool.execute(
+      "tc-1",
+      { path: target, data: { answer: 42, items: ["a", "b"] } },
+      undefined,
+      undefined,
+      {},
+    );
+    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
+    assert.equal(payload.path, target);
+    assert.equal(payload.format, "json");
+    assert.ok(payload.bytes > 0);
+    assert.equal(payload.replaced_existing, false);
+
+    assert.ok(existsSync(target));
+    const onDisk = JSON.parse(readFileSync(target, "utf8"));
+    assert.deepEqual(onDisk, { answer: 42, items: ["a", "b"] });
+
+    assert.deepEqual(result.details.payload, { answer: 42, items: ["a", "b"] });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-test("extracts JSON from trailing assistant message when source omitted", async () => {
-  const text = 'After thinking: {"status":"ok","count":3}';
-  const entries = [
-    {
-      type: "message",
-      timestamp: new Date().toISOString(),
-      message: { role: "user", content: "do thing" },
-    },
-    assistantEntry("earlier text without json"),
-    assistantEntry(text),
-  ];
-  const { tool, ctx } = buildHarness({ entries });
-  const result = await tool.execute("tc-2", {}, undefined, undefined, ctx);
-  assert.deepEqual(result.details, { status: "ok", count: 3 });
+test("extracts JSON value from source when data is omitted", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "from-source.json");
+    const result = await tool.execute(
+      "tc-2",
+      { path: target, source: 'Here is the answer:\n{"answer":42,"items":["a","b"]}\nDone.' },
+      undefined,
+      undefined,
+      {},
+    );
+    const onDisk = JSON.parse(readFileSync(target, "utf8"));
+    assert.deepEqual(onDisk, { answer: 42, items: ["a", "b"] });
+
+    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
+    assert.ok(payload.extracted_from_source);
+    assert.equal(payload.bytes, JSON.stringify({ answer: 42, items: ["a", "b"] }, null, 2).length);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-test("throws when no JSON object can be parsed", async () => {
-  const { tool, ctx } = buildHarness();
+test("extracts top-level array from source", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "arr.json");
+    const result = await tool.execute(
+      "tc-3",
+      { path: target, source: 'prefix [{"a":1},{"b":2}] suffix' },
+      undefined,
+      undefined,
+      {},
+    );
+    const onDisk = JSON.parse(readFileSync(target, "utf8"));
+    assert.deepEqual(onDisk, [{ a: 1 }, { b: 2 }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("creates parent directories", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "deep", "nested", "out.json");
+    const result = await tool.execute(
+      "tc-4",
+      { path: target, data: { ok: true } },
+      undefined,
+      undefined,
+      {},
+    );
+    assert.ok(existsSync(target));
+    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
+    assert.equal(payload.path, target);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("refuses to overwrite by default", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "out.json");
+    // seed the file
+    await tool.execute(
+      "tc-seed",
+      { path: target, data: { v: 1 } },
+      undefined,
+      undefined,
+      {},
+    );
+    await assert.rejects(
+      () => tool.execute("tc-5", { path: target, data: { v: 2 } }, undefined, undefined, {}),
+      /already exists/,
+    );
+    // existing content untouched
+    assert.deepEqual(JSON.parse(readFileSync(target, "utf8")), { v: 1 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("overwrites when overwrite=true", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "out.json");
+    await tool.execute(
+      "tc-seed",
+      { path: target, data: { v: 1 } },
+      undefined,
+      undefined,
+      {},
+    );
+    const result = await tool.execute(
+      "tc-6",
+      { path: target, data: { v: 2 }, overwrite: true },
+      undefined,
+      undefined,
+      {},
+    );
+    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
+    assert.equal(payload.replaced_existing, true);
+    assert.deepEqual(JSON.parse(readFileSync(target, "utf8")), { v: 2 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writes JSONL with one record per line", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "stream.jsonl");
+    const items = [{ a: 1 }, { a: 2 }, { a: 3 }];
+    const result = await tool.execute(
+      "tc-7",
+      { path: target, data: items, format: "jsonl" },
+      undefined,
+      undefined,
+      {},
+    );
+    const onDisk = readFileSync(target, "utf8");
+    const lines = onDisk.split("\n").filter((l) => l.length > 0);
+    assert.equal(lines.length, 3);
+    assert.deepEqual(lines.map((l) => JSON.parse(l)), items);
+    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
+    assert.equal(payload.format, "jsonl");
+    assert.equal(payload.records, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("rejects JSONL on non-array data", async () => {
+  const tool = buildHarness();
   await assert.rejects(
     () =>
-      tool.execute("tc-3", { source: "no braces here" }, undefined, undefined, ctx),
-    /no JSON object found/,
+      tool.execute(
+        "tc-8",
+        { path: "/tmp/x.jsonl", data: { not: "array" }, format: "jsonl" },
+        undefined,
+        undefined,
+        {},
+      ),
+    /requires .* array/,
   );
 });
 
-test("throws when source omitted and no assistant message exists", async () => {
-  const { tool, ctx } = buildHarness({ entries: [] });
+test("honours indent=0 for compact output", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "compact.json");
+    await tool.execute(
+      "tc-9",
+      { path: target, data: { a: 1, b: 2 }, indent: 0 },
+      undefined,
+      undefined,
+      {},
+    );
+    const onDisk = readFileSync(target, "utf8");
+    assert.equal(onDisk, '{"a":1,"b":2}');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("throws when neither data nor source is provided", async () => {
+  const tool = buildHarness();
   await assert.rejects(
-    () => tool.execute("tc-4", {}, undefined, undefined, ctx),
-    /no assistant message found/,
+    () =>
+      tool.execute("tc-10", { path: "/tmp/x.json" }, undefined, undefined, {}),
+    /provide either/,
   );
 });
 
-test("throws when source omitted and session manager missing", async () => {
-  const { tool, ctx } = buildHarness();
+test("throws when source has no JSON value", async () => {
+  const tool = buildHarness();
   await assert.rejects(
-    () => tool.execute("tc-5", {}, undefined, undefined, ctx),
-    /no session manager available/,
+    () =>
+      tool.execute(
+        "tc-11",
+        { path: "/tmp/x.json", source: "no braces here" },
+        undefined,
+        undefined,
+        {},
+      ),
+    /no JSON value/,
   );
 });
 
 test("honours pre-aborted signal", async () => {
-  const { tool, ctx } = buildHarness();
+  const tool = buildHarness();
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(
     () =>
-      tool.execute("tc-6", { source: "{}" }, controller.signal, undefined, ctx),
+      tool.execute(
+        "tc-12",
+        { path: "/tmp/x.json", data: { ok: true } },
+        controller.signal,
+        undefined,
+        {},
+      ),
     /aborted/,
   );
 });
 
-test("forwards label to UI when present", async () => {
-  const { tool, ctx, calls } = buildHarness({ notify: true });
-  await tool.execute(
-    "tc-7",
-    { source: '{"x":1}', label: "demo" },
-    undefined,
-    undefined,
-    ctx,
-  );
-  assert.ok(calls.notify, "notify must have been called");
-  const payload = JSON.parse(calls.notify);
-  assert.equal(payload.title, "finalize_result: demo");
-  assert.equal(JSON.parse(payload.content).x, 1);
+test("string-boundary skipping survives braces inside string literals", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "out.json");
+    await tool.execute(
+      "tc-13",
+      {
+        path: target,
+        source: 'Note: use {"k":"v} which has braces in a string"} outer {"answer":"yes"}',
+      },
+      undefined,
+      undefined,
+      {},
+    );
+    const onDisk = JSON.parse(readFileSync(target, "utf8"));
+    // First balanced value is the inner object containing the brace string
+    assert.deepEqual(onDisk, { k: "v} which has braces in a string" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-test("ignores malformed JSON inside strings", async () => {
-  const { tool, ctx } = buildHarness();
-  const text =
-    'Note: use {"k":"v} which has braces in a string"} outer {"answer":"yes"}';
-  const result = await tool.execute(
-    "tc-8",
-    { source: text },
-    undefined,
-    undefined,
-    ctx,
-  );
-  assert.deepEqual(result.details, { k: "v} which has braces in a string" });
-});
-
-test("string-boundary skipping survives escaped quote inside literal", async () => {
-  const { tool, ctx } = buildHarness();
-  const text = 'pre {"label":"a \\"quoted\\" word","ok":true} post';
-  const result = await tool.execute(
-    "tc-9",
-    { source: text },
-    undefined,
-    undefined,
-    ctx,
-  );
-  assert.deepEqual(result.details, { label: 'a "quoted" word', ok: true });
+test("returns byte count matching on-disk size", async () => {
+  const tool = buildHarness();
+  const dir = tmpDir();
+  try {
+    const target = join(dir, "out.json");
+    const result = await tool.execute(
+      "tc-14",
+      { path: target, data: { hello: "world" } },
+      undefined,
+      undefined,
+      {},
+    );
+    const payload = JSON.parse(/** @type {{ content: Array{ text: string }[] }} */ (result.content)[0].text);
+    const stat = statSync(target);
+    assert.equal(payload.bytes, stat.size);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
