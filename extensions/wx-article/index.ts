@@ -239,8 +239,8 @@ function stripHtmlEntities(s: string): string {
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&ldquo;/gi, """)
-    .replace(/&rdquo;/gi, """)
+    .replace(/&ldquo;/gi, '“')
+    .replace(/&rdquo;/gi, '”')
     .replace(/&hellip;/gi, "…")
     .replace(/&mdash;|&ndash;/gi, "—")
     .replace(/ /gi, " ");
