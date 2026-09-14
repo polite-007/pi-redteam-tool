@@ -80,6 +80,8 @@ Save the asset list to /tmp/osint/example.com.json
 Save these findings as JSONL to /tmp/findings.jsonl
 ```
 
+For full parameters and return shape, see `skills/finalize-result/SKILL.md`.
+
 ## Configuration
 
 Set API keys via environment variables:
