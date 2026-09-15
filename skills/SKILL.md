@@ -23,6 +23,19 @@ Search for all services on 1.2.3.4
 ### FOFA Host (`fofa_host`)
 Get detailed host/asset information from FOFA.
 
+### FOFA Stats (`fofa_stats`)
+Statistics aggregation: use when you want the *scale and distribution* of a query (total count, top protocols / ports / countries / ASNs / titles) rather than a list of assets. Requires a FOFA Professional plan or above; rate limited to 1 request / 5s.
+
+```bash
+# How big is this target, and how is it distributed?
+How many assets does example.com have, and what are the top ports?
+
+# Count only, no aggregation
+Just count how many nginx servers are in China
+```
+
+For full parameters and the aggregation field whitelist, see `skills/fofa-stats/SKILL.md`.
+
 ### DNS Lookup (`dns_lookup`)
 Query DNS records without external API keys.
 

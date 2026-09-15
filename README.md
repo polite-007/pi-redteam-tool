@@ -8,6 +8,7 @@ Red team reconnaissance tools for [Pi Coding Agent](https://pi.dev).
 |------|------|-------------|
 | [fofa-search](extensions/fofa-search) | `fofa_search` | FOFA internet asset search |
 | [fofa-host](extensions/fofa-host) | `fofa_host` | FOFA host/asset query |
+| [fofa-stats](extensions/fofa-stats) | `fofa_stats` | FOFA statistics aggregation (scale & distribution) |
 | [wx-article](extensions/wx-article) | `wx_article` | WeChat public article fetcher |
 | [bgp-lookup](extensions/bgp-lookup) | `bgp_lookup` | BGP/ASN lookup via BGPView API |
 | [dns-lookup](extensions/dns-lookup) | `dns_lookup` | DNS record query (A/AAAA/PTR/NS/MX/TXT/CNAME/SOA/SRV/CAA) |

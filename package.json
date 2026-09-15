@@ -1,6 +1,6 @@
 {
   "name": "@polite-007/pi-redteam-tool",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Red team tools for Pi Coding Agent: OSINT, network reconnaissance, and asset discovery",
   "keywords": ["pi-package", "pi-extension", "red-team", "osint", "security"],
   "license": "MIT",
