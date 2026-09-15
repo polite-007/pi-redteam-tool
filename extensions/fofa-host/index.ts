@@ -1,90 +1,30 @@
 /**
  * FOFA Host extension for Pi Coding Agent.
  *
- * Config priority: REDTEAM_FOFA_* environment variables > settings.json
+ * Config loading and host normalisation live in `_shared/` — see
+ * `_shared/fofa-config.ts` (priority: REDTEAM_FOFA_* env > settings.json) and
+ * `_shared/fofa-asset.ts`. `resolveHost` keeps the export it already had;
+ * `loadFofaConfig` is additionally re-exported — it used to be module-private,
+ * and the test suite needs it to pin config behaviour.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readFileSync, existsSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
+import { fofaNotConfiguredError, loadFofaConfig } from "../../_shared/fofa-config.ts";
+import { parseAsset } from "../../_shared/fofa-asset.ts";
 
-const DEFAULT_BASE = "https://fofa.info";
-const IPV4 =
-  /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
-
-interface FofaConfig {
-  key: string;
-  email?: string;
-  baseUrl: string;
-}
+export { loadFofaConfig } from "../../_shared/fofa-config.ts";
 
 /**
- * Load FOFA config from environment variables or settings.json.
- * Priority: REDTEAM_FOFA_* env vars > settings.json redteam.fofa.*
+ * Reduce any user input (IP, domain, URL) to a bare host, with this tool's
+ * own error wording. The parsing logic itself lives in
+ * `_shared/fofa-asset.ts`.
  */
-export function loadFofaConfig(): FofaConfig | null {
-  // Environment variables (highest priority)
-  const envKey = process.env.REDTEAM_FOFA_KEY?.trim();
-  if (envKey) {
-    return {
-      key: envKey,
-      email: process.env.REDTEAM_FOFA_EMAIL?.trim() || undefined,
-      baseUrl: process.env.REDTEAM_FOFA_BASE_URL?.trim() || DEFAULT_BASE,
-    };
-  }
-
-  // settings.json: look for ~/.pi/agent/settings.json or PI_SETTINGS_PATH
-  const settingsPath = process.env.PI_SETTINGS_PATH || join(homedir(), ".pi", "agent", "settings.json");
-  try {
-    if (existsSync(settingsPath)) {
-      const content = readFileSync(settingsPath, "utf8");
-      const settings = JSON.parse(content);
-      const redteam = settings?.redteam;
-      const fofa = redteam?.fofa;
-      if (fofa?.key?.trim()) {
-        return {
-          key: fofa.key.trim(),
-          email: fofa.email?.trim() || undefined,
-          baseUrl: fofa.baseUrl?.trim() || DEFAULT_BASE,
-        };
-      }
-    }
-  } catch {
-    // Ignore errors reading settings.json
-  }
-
-  return null;
-}
-
-function stripPort(host: string): string {
-  if (host.startsWith("[")) {
-    const end = host.indexOf("]");
-    return end >= 0 ? host.slice(0, end + 1) : host;
-  }
-  const colon = host.lastIndexOf(":");
-  if (colon > 0 && !host.includes("]")) {
-    const maybePort = host.slice(colon + 1);
-    if (/^\d+$/.test(maybePort)) return host.slice(0, colon);
-  }
-  return host;
-}
-
-/** Host API expects IP (or host); strip URL/path. */
 export function resolveHost(input: string): string {
   const raw = input.trim();
   if (!raw) throw new Error("缺少 host / target / input");
-  if (IPV4.test(raw)) return raw;
-  try {
-    const withScheme = raw.includes("://") ? raw : `https://${raw}`;
-    const host = stripPort(new URL(withScheme).hostname);
-    if (host) return host;
-  } catch {
-    /* fall through */
-  }
-  const host = stripPort(raw.split("/")[0] ?? raw);
-  if (!host || host.includes(" ")) throw new Error(`无法解析 host: ${raw}`);
-  return host;
+  const asset = parseAsset(raw);
+  if (!asset) throw new Error(`无法解析 host: ${raw}`);
+  return asset.host;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -105,12 +45,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, _ctx) {
       const cfg = loadFofaConfig();
       if (!cfg?.key) {
-        const err = {
-          error: "FOFA_NOT_CONFIGURED",
-          message:
-            "未配置 FOFA API Key。请设置环境变量 REDTEAM_FOFA_KEY，或在 Pi Web 的 config/config.yaml 中配置 fofa.key。",
-          helpUrl: "https://fofa.info/userInfo",
-        };
+        const err = fofaNotConfiguredError();
         return {
           content: [{ type: "text", text: JSON.stringify(err, null, 2) }],
           details: { configured: false },

@@ -1,9 +1,12 @@
 /**
  * FOFA Search extension for Pi Coding Agent.
  *
- * Config priority: REDTEAM_FOFA_* environment variables > settings.json
- * (Pi Coding Agent reads config/config.yaml and injects the merged values into the
- *  Next.js/pi runtime process environment on startup; no fofa.json is written.)
+ * Config loading and asset/query helpers live in `_shared/` — see
+ * `_shared/fofa-config.ts` (priority: REDTEAM_FOFA_* env > settings.json) and
+ * `_shared/fofa-asset.ts`. `resolveAsset` and `buildDefaultQuery` keep the
+ * exports they already had; `loadFofaConfig` is additionally re-exported — it
+ * used to be module-private, and the test suite needs it to pin config
+ * behaviour.
  *
  * Default return fields = official common set (34). Heavy: header/banner/cert.
  * Official list: https://fofa.info/api
@@ -14,13 +17,19 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readFileSync, existsSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
+import {
+  fofaNotConfiguredError,
+  loadFofaConfig,
+  type FofaConfig,
+} from "../../_shared/fofa-config.ts";
+import {
+  buildDefaultQuery,
+  parseAsset,
+  type ResolvedAsset,
+} from "../../_shared/fofa-asset.ts";
 
-const DEFAULT_BASE = "https://fofa.info";
-const IPV4 =
-  /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
+export { loadFofaConfig } from "../../_shared/fofa-config.ts";
+export { buildDefaultQuery } from "../../_shared/fofa-asset.ts";
 
 /**
  * Official FOFA common return fields (default).
@@ -110,12 +119,6 @@ const FIELD_PRESETS: Record<string, string> = {
   rich: FOFA_FIELDS_DEFAULT,
 };
 
-interface FofaConfig {
-  key: string;
-  email?: string;
-  baseUrl: string;
-}
-
 interface FofaSearchResult {
   error?: boolean;
   errmsg?: string;
@@ -126,83 +129,16 @@ interface FofaSearchResult {
   fields?: string;
 }
 
-interface ResolvedAsset {
-  type: "ip" | "domain" | "url";
-  host: string;
-}
-
 /**
- * Load FOFA config from environment variables or settings.json.
- * Priority: REDTEAM_FOFA_* env vars > settings.json redteam.fofa.*
+ * Classify and normalise a user-supplied asset, with this tool's own error
+ * wording. The parsing logic itself lives in `_shared/fofa-asset.ts`.
  */
-export function loadFofaConfig(): FofaConfig | null {
-  // Environment variables (highest priority)
-  const envKey = process.env.REDTEAM_FOFA_KEY?.trim();
-  if (envKey) {
-    return {
-      key: envKey,
-      email: process.env.REDTEAM_FOFA_EMAIL?.trim() || undefined,
-      baseUrl: process.env.REDTEAM_FOFA_BASE_URL?.trim() || DEFAULT_BASE,
-    };
-  }
-
-  // settings.json: look for ~/.pi/agent/settings.json or PI_SETTINGS_PATH
-  const settingsPath = process.env.PI_SETTINGS_PATH || join(homedir(), ".pi", "agent", "settings.json");
-  try {
-    if (existsSync(settingsPath)) {
-      const content = readFileSync(settingsPath, "utf8");
-      const settings = JSON.parse(content);
-      const redteam = settings?.redteam;
-      const fofa = redteam?.fofa;
-      if (fofa?.key?.trim()) {
-        return {
-          key: fofa.key.trim(),
-          email: fofa.email?.trim() || undefined,
-          baseUrl: fofa.baseUrl?.trim() || DEFAULT_BASE,
-        };
-      }
-    }
-  } catch {
-    // Ignore errors reading settings.json
-  }
-
-  return null;
-}
-
-function stripPort(host: string): string {
-  if (host.startsWith("[")) {
-    const end = host.indexOf("]");
-    return end >= 0 ? host.slice(0, end + 1) : host;
-  }
-  const colon = host.lastIndexOf(":");
-  if (colon > 0 && !host.includes("]")) {
-    const maybePort = host.slice(colon + 1);
-    if (/^\d+$/.test(maybePort)) return host.slice(0, colon);
-  }
-  return host;
-}
-
 export function resolveAsset(input: string): ResolvedAsset {
   const raw = input.trim();
   if (!raw) throw new Error("资产输入为空");
-  if (IPV4.test(raw)) return { type: "ip", host: raw };
-
-  try {
-    const withScheme = raw.includes("://") ? raw : `https://${raw}`;
-    const url = new URL(withScheme);
-    const host = stripPort(url.hostname);
-    if (IPV4.test(host)) return { type: "ip", host };
-    return { type: raw.includes("://") ? "url" : "domain", host };
-  } catch {
-    const host = stripPort(raw.split("/")[0] ?? raw);
-    if (!host || host.includes(" ")) throw new Error(`无法解析资产: ${raw}`);
-    return { type: "domain", host };
-  }
-}
-
-export function buildDefaultQuery(asset: ResolvedAsset): string {
-  if (asset.type === "ip") return `ip="${asset.host}"`;
-  return `domain="${asset.host}"`;
+  const asset = parseAsset(raw);
+  if (!asset) throw new Error(`无法解析资产: ${raw}`);
+  return asset;
 }
 
 const CERT_STRIP_RE =
@@ -326,12 +262,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, _ctx) {
       const cfg = loadFofaConfig();
       if (!cfg?.key) {
-        const err = {
-          error: "FOFA_NOT_CONFIGURED",
-          message:
-            "未配置 FOFA API Key。请设置环境变量 REDTEAM_FOFA_KEY，或在 settings.json 中配置 redteam.fofa.key。",
-          helpUrl: "https://fofa.info/userInfo",
-        };
+        const err = fofaNotConfiguredError();
         return {
           content: [{ type: "text", text: JSON.stringify(err, null, 2) }],
           details: { configured: false },
