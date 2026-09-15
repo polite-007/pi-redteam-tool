@@ -23,7 +23,7 @@ interface FofaConfig {
  * Load FOFA config from environment variables or settings.json.
  * Priority: REDTEAM_FOFA_* env vars > settings.json redteam.fofa.*
  */
-function loadFofaConfig(): FofaConfig | null {
+export function loadFofaConfig(): FofaConfig | null {
   // Environment variables (highest priority)
   const envKey = process.env.REDTEAM_FOFA_KEY?.trim();
   if (envKey) {
