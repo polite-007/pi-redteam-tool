@@ -8,9 +8,7 @@
 import { spawn } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readFileSync, existsSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
+import { getSettingString, readSettings } from "../../_shared/settings.ts";
 
 const DEFAULT_UA = "pi-redteam-tool-httpx-probe/0.3";
 const DEFAULT_MAX_REDIRECTS = 10;
@@ -117,35 +115,19 @@ export function resolveFollowRedirects(value: unknown): boolean {
   return value !== false;
 }
 
+/** Path to the httpx binary: settings.json `redteam.httpx.binary`, else PATH. */
 export function resolveHttpxBinary(): string {
-  return process.env.REDTEAM_HTTPX_BINARY?.trim() || "httpx";
+  return getSettingString(readSettings(), "redteam.httpx.binary") ?? "httpx";
 }
 
 /**
- * Load HTTPX proxy from environment variables or settings.json.
- * Priority: REDTEAM_HTTPX_PROXY env var > settings.json redteam.httpx.proxy
+ * Proxy for httpx: settings.json `redteam.httpx.proxy`, else none.
+ *
+ * Returns `undefined` when unconfigured, which means "pass no `-proxy` flag"
+ * and let httpx use its own default.
  */
 export function resolveHttpxProxy(): string | undefined {
-  // Environment variable (highest priority)
-  const envProxy = process.env.REDTEAM_HTTPX_PROXY?.trim();
-  if (envProxy) return envProxy;
-
-  // settings.json: look for ~/.pi/agent/settings.json or PI_SETTINGS_PATH
-  const settingsPath = process.env.PI_SETTINGS_PATH || join(homedir(), ".pi", "agent", "settings.json");
-  try {
-    if (existsSync(settingsPath)) {
-      const content = readFileSync(settingsPath, "utf8");
-      const settings = JSON.parse(content);
-      const proxy = settings?.redteam?.httpx?.proxy;
-      if (typeof proxy === "string" && proxy.trim()) {
-        return proxy.trim();
-      }
-    }
-  } catch {
-    // Ignore errors reading settings.json
-  }
-
-  return undefined;
+  return getSettingString(readSettings(), "redteam.httpx.proxy");
 }
 
 function flagOn(value: unknown, defaultOn: boolean): boolean {
@@ -504,7 +486,7 @@ export default function registerHttpxProbe(pi: ExtensionAPI) {
     name: "httpx_probe",
     label: "HTTP Probe",
     description:
-      "通用 HTTP 请求与探测工具：调用本机 ProjectDiscovery httpx（JSONL）。需要先安装 httpx 二进制（或通过 REDTEAM_HTTPX_BINARY 指定路径）。默认保留 title/TLS/tech/ASN/CDN/header/body preview 等探测信息。",
+      "通用 HTTP 请求与探测工具：调用本机 ProjectDiscovery httpx（JSONL）。需要先安装 httpx 二进制（或在 settings.json 的 redteam.httpx.binary 中指定路径）。默认保留 title/TLS/tech/ASN/CDN/header/body preview 等探测信息。",
     parameters: Type.Object({
       target: Type.Optional(Type.String({ description: "URL、域名或 IP" })),
       input: Type.Optional(Type.String({ description: "URL、域名或 IP" })),
@@ -594,7 +576,7 @@ export default function registerHttpxProbe(pi: ExtensionAPI) {
         };
       }
 
-      // proxy === "" disables; omit → config/env REDTEAM_HTTPX_PROXY
+      // proxy === "" disables; omit → redteam.httpx.proxy from settings.json
       const proxy = p.proxy === undefined
         ? resolveHttpxProxy()
         : p.proxy.trim()
@@ -626,7 +608,7 @@ export default function registerHttpxProbe(pi: ExtensionAPI) {
           const err = error as NodeJS.ErrnoException;
           if (err?.code === "ENOENT") {
             const message =
-              "未找到 httpx 二进制。请安装 ProjectDiscovery httpx，或设置 REDTEAM_HTTPX_BINARY 环境变量（或 config/config.yaml 的 httpx.binary）指向其路径。";
+              "未找到 httpx 二进制。请安装 ProjectDiscovery httpx，或在 settings.json 的 redteam.httpx.binary 中配置其路径。";
             return {
               content: [{ type: "text", text: message }],
               details: { error: true, engine: "httpx", message, binary },

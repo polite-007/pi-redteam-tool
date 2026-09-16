@@ -73,18 +73,26 @@ Probe https://example.com with custom Accept header
 需要安装 ProjectDiscovery httpx：
 
 ```bash
-# 安装 httpx
 go install github.com/projectdiscovery/httpx/cmd/httpx@latest
-
-# 或指定路径
-export REDTEAM_HTTPX_BINARY="/path/to/httpx"
 ```
 
-代理配置：
+若 httpx 不在 `PATH` 中，或需要走代理，在 `~/.pi/agent/settings.json` 中配置：
 
-```bash
-export REDTEAM_HTTPX_PROXY="http://proxy:8080"
+```json
+{
+  "redteam": {
+    "httpx": {
+      "binary": "/path/to/httpx",
+      "proxy": "http://proxy:8080"
+    }
+  }
+}
 ```
+
+两项都可选：`binary` 省略时按 `PATH` 查找 `httpx`；`proxy` 省略时不加 `-proxy` 参数。
+调用参数里的 `proxy` 优先级高于配置（传 `proxy=""` 表示显式禁用代理）。
+
+> 环境变量 `REDTEAM_HTTPX_BINARY` / `REDTEAM_HTTPX_PROXY` **不再被读取**，配置只认配置文件这一个来源。
 
 ## 安全特性
 

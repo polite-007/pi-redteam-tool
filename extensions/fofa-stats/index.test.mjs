@@ -13,6 +13,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -39,11 +40,20 @@ const FOFA_ENV_KEYS = [
 ];
 
 /**
- * A path that cannot exist. Every test pins PI_SETTINGS_PATH to this, so no
- * test can silently read the developer's real ~/.pi/agent/settings.json and
- * pass or fail depending on the machine it runs on.
+ * A path that cannot exist. Every test pins PI_SETTINGS_PATH to this or to a
+ * temp file, so no test can silently read the developer's real
+ * ~/.pi/agent/settings.json and pass or fail depending on the machine it runs
+ * on.
  */
 const NO_SETTINGS_FILE = join(tmpdir(), "fofa-stats-must-not-be-read.json");
+
+/** Write a FOFA config to a temp settings file and return its path + dir. */
+function tempSettings(content) {
+  const dir = mkdtempSync(join(tmpdir(), "fofa-stats-settings-"));
+  const file = join(dir, "settings.json");
+  writeFileSync(file, content, "utf8");
+  return { file, dir };
+}
 
 /**
  * Run `body` with a stubbed FOFA environment, then always restore — including
@@ -51,20 +61,30 @@ const NO_SETTINGS_FILE = join(tmpdir(), "fofa-stats-must-not-be-read.json");
  * would leave the literal string "undefined" behind. Async-aware: the
  * environment stays installed until `body` settles.
  *
+ * Credentials come from settings.json and nowhere else, so "configured" means
+ * a temp settings file holding the key, and "not configured" means a path that
+ * does not exist. The REDTEAM_FOFA_* variables are cleared (and restored)
+ * rather than used, so a developer's exported key cannot leak into a run.
+ *
  * Pass `key: null` for "no credentials". (Not `undefined` — a destructuring
  * default fires on `undefined`, which would silently install the test key.)
  */
-async function withEnv(body, { key = "test-key" } = {}) {
+async function withEnv(body, { key = "test-key", baseUrl } = {}) {
   const saved = {};
   for (const name of FOFA_ENV_KEYS) saved[name] = process.env[name];
-  if (key) process.env.REDTEAM_FOFA_KEY = key;
-  else delete process.env.REDTEAM_FOFA_KEY;
-  delete process.env.REDTEAM_FOFA_EMAIL;
-  delete process.env.REDTEAM_FOFA_BASE_URL;
-  process.env.PI_SETTINGS_PATH = NO_SETTINGS_FILE;
+  for (const name of FOFA_ENV_KEYS) delete process.env[name];
+
+  const { file, dir } = key
+    ? tempSettings(
+        JSON.stringify({ redteam: { fofa: { key, ...(baseUrl ? { baseUrl } : {}) } } }),
+      )
+    : { file: NO_SETTINGS_FILE, dir: null };
+  process.env.PI_SETTINGS_PATH = file;
+
   try {
     return await body();
   } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
     for (const name of FOFA_ENV_KEYS) {
       if (saved[name] === undefined) delete process.env[name];
       else process.env[name] = saved[name];
@@ -277,6 +297,25 @@ test("execute: reports a missing key without calling the network", async (t) => 
   });
 });
 
+test("execute: a key present only in the environment is not configuration", async (t) => {
+  // The regression this change exists for: REDTEAM_FOFA_KEY used to win over
+  // the config file. It must now be ignored outright.
+  const fetchMock = t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("fetch should not have been called");
+  });
+  await withEnv(
+    async () => {
+      process.env.REDTEAM_FOFA_KEY = "from-env";
+      process.env.REDTEAM_FOFA_BASE_URL = "https://env.example";
+      const result = await buildHarness().execute("tc", { query: "q" }, undefined, undefined, {});
+      assert.equal(result.isError, true);
+      assert.equal(readPayload(result).error, "FOFA_NOT_CONFIGURED");
+      assert.equal(fetchMock.mock.callCount(), 0);
+    },
+    { key: null },
+  );
+});
+
 /* ------------------------------------------------------------------ *
  * execute — request shape
  * ------------------------------------------------------------------ */
@@ -305,6 +344,20 @@ test("execute: sends key, qbase64, fields and size to the stats endpoint", async
     );
     assert.equal(result.isError, undefined);
   });
+});
+
+test("execute: honours a custom baseUrl from settings.json", async (t) => {
+  const fetchMock = t.mock.method(globalThis, "fetch", async () => fakeResponse(SAMPLE));
+
+  await withEnv(
+    async () => {
+      const result = await buildHarness().execute("tc", { query: "q" }, undefined, undefined, {});
+      const url = new URL(fetchMock.mock.calls[0].arguments[0].toString());
+      assert.equal(url.origin, "https://mirror.example");
+      assert.equal(result.isError, undefined);
+    },
+    { baseUrl: "https://mirror.example" },
+  );
 });
 
 test("execute: a query is mandatory — qbase64 is never sent empty", async (t) => {

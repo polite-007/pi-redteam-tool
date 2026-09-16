@@ -97,19 +97,20 @@ For full parameters and return shape, see `skills/finalize-result/SKILL.md`.
 
 ## Configuration
 
-Set API keys via environment variables:
-
-```bash
-export REDTEAM_FOFA_KEY="your-fofa-key"
-export REDTEAM_PASSIVE_DNS_KEY="your-securitytrails-key"
-```
-
-Or configure in `~/.pi/agent/settings.json`:
+All configuration is read from `~/.pi/agent/settings.json` (`PI_SETTINGS_PATH`
+overrides the path). Credentials are not read from the environment anywhere.
 
 ```json
 {
   "redteam": {
-    "fofa": { "key": "your-key" }
+    "fofa": { "key": "your-key", "email": "you@example.com", "baseUrl": "https://fofa.info" },
+    "httpx": { "binary": "/path/to/httpx", "proxy": "socks5://127.0.0.1:1080" },
+    "passiveDns": { "securityTrailsKey": "your-securitytrails-key" }
   }
 }
 ```
+
+`fofa.key` is the only required value. When a tool finds it unconfigured it
+says so (FOFA tools return `FOFA_NOT_CONFIGURED`) and names the settings file to
+edit. If a tool reports "not configured" but you have exported the matching
+`REDTEAM_*` variable, that is why: those variables are no longer read.

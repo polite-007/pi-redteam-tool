@@ -54,13 +54,21 @@ Search passive DNS for *.example.com with limit=200
 
 ## 配置
 
-SecurityTrails API Key（可选，提升 IP 反查质量）：
+SecurityTrails API Key（可选，提升 IP 反查质量）。在 `~/.pi/agent/settings.json` 中配置：
 
-```bash
-export REDTEAM_PASSIVE_DNS_KEY="your-securitytrails-key"
+```json
+{
+  "redteam": {
+    "passiveDns": {
+      "securityTrailsKey": "your-securitytrails-key"
+    }
+  }
+}
 ```
 
-或在 `config/config.yaml` 中配置 `passive-dns.key`。
+未配置时 IP 反查回退到 HackerTarget，响应里 `configuredSecurityTrails` 为 `false`。
+
+> 环境变量 `REDTEAM_PASSIVE_DNS_KEY` **不再被读取**，配置只认配置文件这一个来源。
 
 ## 使用场景
 

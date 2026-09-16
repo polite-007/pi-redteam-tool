@@ -34,6 +34,9 @@ import {
   resolveFields,
   rowsToObjects,
 } from "./index.ts";
+// Imported from the shared module rather than through the extension: the tool
+// does not re-export this one, and a test is not a reason to widen its surface.
+import { fofaNotConfiguredError } from "../../_shared/fofa-config.ts";
 
 /* ------------------------------------------------------------------ *
  * environment helpers
@@ -58,6 +61,11 @@ const NO_SETTINGS_FILE = join(tmpdir(), "fofa-settings-must-not-be-read.json");
  * Snapshot the FOFA-related env vars, hand control to `body`, and always
  * restore — including deleting vars that were absent to begin with, since
  * assigning `undefined` would leave the literal string "undefined" behind.
+ *
+ * The REDTEAM_FOFA_* names are also *cleared* for the duration: the loader no
+ * longer reads them, and clearing them means a developer who happens to export
+ * one still cannot influence the result. The "ignores env vars" test below is
+ * the one that sets them back on purpose.
  */
 function withEnv(body) {
   const saved = {};
@@ -83,36 +91,20 @@ function tempSettings(content) {
 }
 
 /* ------------------------------------------------------------------ *
- * loadFofaConfig — env > settings.json, with fallbacks
+ * loadFofaConfig — settings.json only, no environment fallback
  * ------------------------------------------------------------------ */
 
-test("loadFofaConfig: env vars win over settings.json", () => {
-  withEnv(() => {
-    const { file, dir } = tempSettings(
-      JSON.stringify({ redteam: { fofa: { key: "from-settings" } } }),
-    );
-    try {
-      process.env.REDTEAM_FOFA_KEY = "from-env";
-      process.env.REDTEAM_FOFA_EMAIL = "env@example.com";
-      process.env.PI_SETTINGS_PATH = file;
-
-      const cfg = loadFofaConfig();
-      assert.deepEqual(cfg, {
-        key: "from-env",
-        email: "env@example.com",
-        baseUrl: "https://fofa.info",
-      });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-test("loadFofaConfig: falls back to settings.json when env key is absent", () => {
+test("loadFofaConfig: reads key, email and baseUrl from settings.json", () => {
   withEnv(() => {
     const { file, dir } = tempSettings(
       JSON.stringify({
-        redteam: { fofa: { key: "from-settings", email: "s@example.com" } },
+        redteam: {
+          fofa: {
+            key: "from-settings",
+            email: "s@example.com",
+            baseUrl: "https://mirror.example",
+          },
+        },
       }),
     );
     try {
@@ -121,6 +113,25 @@ test("loadFofaConfig: falls back to settings.json when env key is absent", () =>
       assert.deepEqual(loadFofaConfig(), {
         key: "from-settings",
         email: "s@example.com",
+        baseUrl: "https://mirror.example",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("loadFofaConfig: baseUrl falls back to the official endpoint", () => {
+  withEnv(() => {
+    const { file, dir } = tempSettings(
+      JSON.stringify({ redteam: { fofa: { key: "from-settings" } } }),
+    );
+    try {
+      process.env.PI_SETTINGS_PATH = file;
+
+      assert.deepEqual(loadFofaConfig(), {
+        key: "from-settings",
+        email: undefined,
         baseUrl: "https://fofa.info",
       });
     } finally {
@@ -129,61 +140,76 @@ test("loadFofaConfig: falls back to settings.json when env key is absent", () =>
   });
 });
 
-test("loadFofaConfig: a whitespace-only env key is treated as absent", () => {
+test("loadFofaConfig: ignores the REDTEAM_FOFA_* environment variables", () => {
+  // The regression this whole change exists for. A key in the environment used
+  // to win over the config file; it must now be ignored entirely — including
+  // when it is the only place a key exists.
   withEnv(() => {
     const { file, dir } = tempSettings(
       JSON.stringify({ redteam: { fofa: { key: "from-settings" } } }),
     );
     try {
-      process.env.REDTEAM_FOFA_KEY = "   ";
+      process.env.REDTEAM_FOFA_KEY = "from-env";
+      process.env.REDTEAM_FOFA_EMAIL = "env@example.com";
+      process.env.REDTEAM_FOFA_BASE_URL = "https://env.example";
       process.env.PI_SETTINGS_PATH = file;
 
-      assert.equal(loadFofaConfig()?.key, "from-settings");
+      assert.deepEqual(loadFofaConfig(), {
+        key: "from-settings",
+        email: undefined,
+        baseUrl: "https://fofa.info",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 });
 
-test("loadFofaConfig: honours a custom base url from env and from settings", () => {
+test("loadFofaConfig: an env-only key is not configuration", () => {
   withEnv(() => {
-    process.env.REDTEAM_FOFA_KEY = "k";
-    process.env.REDTEAM_FOFA_BASE_URL = "https://mirror.example";
-    assert.equal(loadFofaConfig()?.baseUrl, "https://mirror.example");
+    process.env.REDTEAM_FOFA_KEY = "from-env";
+    assert.equal(loadFofaConfig(), null);
   });
+});
 
+test("loadFofaConfig: a whitespace-only key in settings is treated as absent", () => {
+  withEnv(() => {
+    const { file, dir } = tempSettings(
+      JSON.stringify({ redteam: { fofa: { key: "   " } } }),
+    );
+    try {
+      process.env.PI_SETTINGS_PATH = file;
+      assert.equal(loadFofaConfig(), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("loadFofaConfig: trims the key and baseUrl, and drops a blank email", () => {
   withEnv(() => {
     const { file, dir } = tempSettings(
       JSON.stringify({
-        redteam: { fofa: { key: "k", baseUrl: "https://mirror.example" } },
+        redteam: { fofa: { key: "  k  ", email: "   ", baseUrl: "  https://m.example  " } },
       }),
     );
     try {
       process.env.PI_SETTINGS_PATH = file;
-      assert.equal(loadFofaConfig()?.baseUrl, "https://mirror.example");
+
+      assert.deepEqual(loadFofaConfig(), {
+        key: "k",
+        email: undefined,
+        baseUrl: "https://m.example",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-});
-
-test("loadFofaConfig: omits email when neither source provides one", () => {
-  withEnv(() => {
-    process.env.REDTEAM_FOFA_KEY = "k";
-    const cfg = loadFofaConfig();
-    assert.equal(cfg?.key, "k");
-    assert.equal(cfg?.email, undefined);
-  });
-});
-
-test("loadFofaConfig: returns null when no source has a key", () => {
-  withEnv(() => {
-    assert.equal(loadFofaConfig(), null);
   });
 });
 
 test("loadFofaConfig: returns null when the settings file is missing", () => {
   withEnv(() => {
+    assert.equal(loadFofaConfig(), null);
     process.env.PI_SETTINGS_PATH = join(tmpdir(), "definitely-not-here-12345.json");
     assert.equal(loadFofaConfig(), null);
   });
@@ -212,6 +238,18 @@ test("loadFofaConfig: returns null when settings.json lacks redteam.fofa.key", (
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+test("fofaNotConfiguredError: names the settings file the user has to edit", () => {
+  withEnv(() => {
+    process.env.PI_SETTINGS_PATH = NO_SETTINGS_FILE;
+    const err = fofaNotConfiguredError();
+    assert.equal(err.error, "FOFA_NOT_CONFIGURED");
+    assert.match(err.message, /redteam\.fofa\.key/);
+    assert.ok(err.message.includes(NO_SETTINGS_FILE), "should name the config path");
+    // Nothing may still be steering users at the removed env var.
+    assert.doesNotMatch(err.message, /REDTEAM_FOFA/);
   });
 });
 

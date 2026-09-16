@@ -40,7 +40,12 @@ const FOFA_ENV_KEYS = [
  */
 const NO_SETTINGS_FILE = join(tmpdir(), "fofa-host-must-not-be-read.json");
 
-/** Snapshot FOFA env vars, run `body`, then always restore. */
+/**
+ * Snapshot FOFA env vars, run `body`, then always restore. The
+ * REDTEAM_FOFA_* names are cleared as well as restored: the loader no longer
+ * reads them, and clearing them keeps a developer's exported key from having
+ * any say in the result.
+ */
 function withEnv(body) {
   const saved = {};
   for (const key of FOFA_ENV_KEYS) saved[key] = process.env[key];
@@ -110,20 +115,18 @@ test("resolveHost: rejects unparseable input containing whitespace", () => {
 });
 
 /* ------------------------------------------------------------------ *
- * loadFofaConfig — the copy that lives in this extension
+ * loadFofaConfig — shared with fofa-search, settings.json only
  * ------------------------------------------------------------------ */
 
-test("loadFofaConfig: env vars win over settings.json", () => {
+test("loadFofaConfig: reads the key from settings.json", () => {
   withEnv(() => {
     const { file, dir } = tempSettings(
       JSON.stringify({ redteam: { fofa: { key: "from-settings" } } }),
     );
     try {
-      process.env.REDTEAM_FOFA_KEY = "from-env";
       process.env.PI_SETTINGS_PATH = file;
-
       assert.deepEqual(loadFofaConfig(), {
-        key: "from-env",
+        key: "from-settings",
         email: undefined,
         baseUrl: "https://fofa.info",
       });
@@ -133,21 +136,14 @@ test("loadFofaConfig: env vars win over settings.json", () => {
   });
 });
 
-test("loadFofaConfig: falls back to settings.json", () => {
+test("loadFofaConfig: ignores the REDTEAM_FOFA_* environment variables", () => {
   withEnv(() => {
-    const { file, dir } = tempSettings(
-      JSON.stringify({ redteam: { fofa: { key: "from-settings" } } }),
-    );
-    try {
-      process.env.PI_SETTINGS_PATH = file;
-      assert.equal(loadFofaConfig()?.key, "from-settings");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    process.env.REDTEAM_FOFA_KEY = "from-env";
+    assert.equal(loadFofaConfig(), null, "an env-only key is not configuration");
   });
 });
 
-test("loadFofaConfig: returns null when no source has a key", () => {
+test("loadFofaConfig: returns null when the settings file is missing", () => {
   withEnv(() => {
     assert.equal(loadFofaConfig(), null);
   });

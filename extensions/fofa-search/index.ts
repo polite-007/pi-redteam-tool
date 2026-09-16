@@ -2,7 +2,7 @@
  * FOFA Search extension for Pi Coding Agent.
  *
  * Config loading and asset/query helpers live in `_shared/` — see
- * `_shared/fofa-config.ts` (priority: REDTEAM_FOFA_* env > settings.json) and
+ * `_shared/fofa-config.ts` (credentials from settings.json only) and
  * `_shared/fofa-asset.ts`. `resolveAsset` and `buildDefaultQuery` keep the
  * exports they already had; `loadFofaConfig` is additionally re-exported — it
  * used to be module-private, and the test suite needs it to pin config

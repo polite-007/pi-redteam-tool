@@ -46,6 +46,28 @@ Aggregate the top 10 ports and countries for 1.2.3.4
 query="app=\"nginx\"" fields="port,country" top=10
 ```
 
+## 配置
+
+需要在 `~/.pi/agent/settings.json` 中配置 FOFA API Key（与 `fofa_search`、`fofa_host` 共用同一份配置）：
+
+```json
+{
+  "redteam": {
+    "fofa": {
+      "key": "your-fofa-key",
+      "email": "your-email@example.com",
+      "baseUrl": "https://fofa.info"
+    }
+  }
+}
+```
+
+`baseUrl` 省略时默认 `https://fofa.info`；`email` 可选；`key` 缺失时工具返回
+`FOFA_NOT_CONFIGURED`，并在错误信息里给出需要编辑的配置文件路径。
+
+> 环境变量 `REDTEAM_FOFA_KEY` / `REDTEAM_FOFA_EMAIL` / `REDTEAM_FOFA_BASE_URL`
+> **不再被读取**，配置只认配置文件这一个来源。
+
 ## 调用示例
 
 ```json

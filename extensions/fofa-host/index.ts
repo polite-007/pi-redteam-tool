@@ -2,7 +2,7 @@
  * FOFA Host extension for Pi Coding Agent.
  *
  * Config loading and host normalisation live in `_shared/` — see
- * `_shared/fofa-config.ts` (priority: REDTEAM_FOFA_* env > settings.json) and
+ * `_shared/fofa-config.ts` (credentials from settings.json only) and
  * `_shared/fofa-asset.ts`. `resolveHost` keeps the export it already had;
  * `loadFofaConfig` is additionally re-exported — it used to be module-private,
  * and the test suite needs it to pin config behaviour.

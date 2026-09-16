@@ -31,7 +31,9 @@ pi install git:github.com/polite-007/pi-redteam-tool
 
 ## Configuration
 
-Configure via environment variables or `~/.pi/agent/settings.json`:
+All configuration lives in `~/.pi/agent/settings.json`, under the `redteam`
+key. Credentials are **not** read from the environment — one source means the
+key, proxy or path a tool uses is always the one the file names.
 
 ```json
 {
@@ -52,18 +54,27 @@ Configure via environment variables or `~/.pi/agent/settings.json`:
 }
 ```
 
+| Key | Used by | Required | Description |
+|-----|---------|----------|-------------|
+| `fofa.key` | `fofa_search`, `fofa_host`, `fofa_stats` | yes | FOFA API key; without it the tools report `FOFA_NOT_CONFIGURED` |
+| `fofa.email` | FOFA tools | no | FOFA account email |
+| `fofa.baseUrl` | FOFA tools | no | FOFA API base URL (default: `https://fofa.info`) |
+| `httpx.binary` | `httpx_probe` | no | Path to the httpx binary (default: `httpx` from `PATH`) |
+| `httpx.proxy` | `httpx_probe` | no | Proxy passed to httpx (default: none) |
+| `passiveDns.securityTrailsKey` | `passive_dns` | no | SecurityTrails key; without it IP lookups fall back to HackerTarget |
+
+The remaining tools (`bgp_lookup`, `dns_lookup`, `whois_rdap`, `wx_article`,
+`finalize_result`) need no configuration.
+
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `REDTEAM_FOFA_KEY` | FOFA API key |
-| `REDTEAM_FOFA_EMAIL` | FOFA account email |
-| `REDTEAM_FOFA_BASE_URL` | FOFA API base URL (default: https://fofa.info) |
-| `REDTEAM_HTTPX_BINARY` | Path to httpx binary |
-| `REDTEAM_HTTPX_PROXY` | HTTP proxy for httpx |
-| `REDTEAM_PASSIVE_DNS_KEY` | SecurityTrails API key |
+| `PI_SETTINGS_PATH` | Path to the settings file (default: `~/.pi/agent/settings.json`) |
 
-**Priority**: Environment variable > settings.json
+`PI_SETTINGS_PATH` is the only variable read anywhere: it *locates* the config
+file rather than carrying configuration. `REDTEAM_FOFA_*`, `REDTEAM_HTTPX_*` and
+`REDTEAM_PASSIVE_DNS_KEY` are no longer read.
 
 ## Usage
 
