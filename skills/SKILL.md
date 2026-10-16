@@ -82,19 +82,6 @@ Check HTTP headers and status for these URLs
 ### WeChat Article (`wx_article`)
 Fetch WeChat public account articles.
 
-### Finalize Result (`finalize_result`)
-Persist a raw JSON payload (`data`) to a local file at `path`. Use this as the closing step of any task that needs to hand off a structured result to downstream automation.
-
-```bash
-# Save a recon report
-Save the asset list to /tmp/osint/example.com.json
-
-# Stream newline-delimited records
-Save these findings as JSONL to /tmp/findings.jsonl
-```
-
-For full parameters and return shape, see `skills/finalize-result/SKILL.md`.
-
 ## Configuration
 
 All configuration is read from `~/.pi/agent/settings.json` (`PI_SETTINGS_PATH`

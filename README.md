@@ -15,7 +15,6 @@ Red team reconnaissance tools for [Pi Coding Agent](https://pi.dev).
 | [httpx-probe](extensions/httpx-probe) | `httpx_probe` | HTTP probe with ProjectDiscovery httpx |
 | [passive-dns](extensions/passive-dns) | `passive_dns` | Passive DNS via crt.sh + SecurityTrails |
 | [whois-rdap](extensions/whois-rdap) | `whois_rdap` | WHOIS/RDAP domain registration lookup |
-| [finalize-result](extensions/finalize-result) | `finalize_result` | Persist a raw JSON payload to a local file |
 
 ## Installation
 
@@ -63,8 +62,8 @@ key, proxy or path a tool uses is always the one the file names.
 | `httpx.proxy` | `httpx_probe` | no | Proxy passed to httpx (default: none) |
 | `passiveDns.securityTrailsKey` | `passive_dns` | no | SecurityTrails key; without it IP lookups fall back to HackerTarget |
 
-The remaining tools (`bgp_lookup`, `dns_lookup`, `whois_rdap`, `wx_article`,
-`finalize_result`) need no configuration.
+The remaining tools (`bgp_lookup`, `dns_lookup`, `whois_rdap`, `wx_article`)
+need no configuration.
 
 ### Environment Variables
 
