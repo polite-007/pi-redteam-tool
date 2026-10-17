@@ -2,16 +2,18 @@
  * Network lookup extension for Pi Coding Agent.
  *
  * One tool, three lookup modes:
- * - `bgp`: routing view (ASN / prefix / access-vs-infrastructure classification)
- *   via BGPView.
+ * - `bgp`: routing view (ASN / prefix / access-vs-infrastructure
+ *   classification) via RIPEstat, with Team Cymru and BGPView fallbacks.
  * - `whois`: registration view via RDAP/WHOIS (IPs and domains, JPNIC aware).
- * - `all`: both in parallel, merged into a single attribution assessment.
+ * - `all`: both in parallel, merged into a single attribution assessment,
+ *   optionally enriched with Shodan InternetDB host data.
  *
  * `mode=auto` (default) picks `all` for IPs and `whois` for domains.
  */
 import { connect as netConnect } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { AUTO_DOH_ENDPOINTS, queryDoh } from "../../_shared/doh.ts";
 
 const IPV4 =
   /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
@@ -134,16 +136,23 @@ export function classifyBgpUsage(input: {
   let scoreCustomer = 0;
   let scoreInfra = 0;
 
-  if (customerHints.test(blob)) {
+  const customerKeyword = customerHints.test(blob);
+  const infraKeyword = infraHints.test(blob);
+
+  if (customerKeyword) {
     scoreCustomer += 2;
     reasons.push("name/description suggests access/broadband/customer");
   }
-  if (infraHints.test(blob)) {
+  if (infraKeyword) {
     scoreInfra += 2;
     reasons.push("name/description suggests backbone/transit/infra");
   }
   if (typeof len === "number") {
-    if (len >= 22 && len <= 28) {
+    if (!customerKeyword && !infraKeyword) {
+      // Prefix length alone is not ownership evidence: /24 is used by both
+      // access pools and anycast/infrastructure.
+      reasons.push(`prefix length /${len} without ownership keywords`);
+    } else if (len >= 22 && len <= 28) {
       scoreCustomer += 1;
       reasons.push(`prefix length /${len} typical of access pools`);
     } else if (len > 0 && len <= 16) {
@@ -295,6 +304,509 @@ async function runBgp(
     clearTimeout(timer);
     signal?.removeEventListener("abort", onAbort);
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Routing enrichment: RIPEstat + Team Cymru
+ * ------------------------------------------------------------------ */
+
+export type RouteSummary = {
+  ip: string;
+  ptr?: string;
+  asn?: string;
+  asnNumber?: number;
+  asnName?: string;
+  asnDescription?: string;
+  asnCountry?: string;
+  prefix?: string;
+  prefixLen?: number;
+  prefixName?: string;
+  prefixDescription?: string;
+  prefixCountry?: string;
+  rir?: string;
+  rirAllocation?: string;
+  rirCountry?: string;
+  prefixes?: Array<Record<string, unknown>>;
+  block?: string;
+  announced?: boolean;
+  lessSpecific?: boolean;
+  country?: string;
+  allocated?: string;
+  classification: BgpUsageClass;
+  classificationReasons: string[];
+  hint: string;
+  source: string;
+  rpki?: {
+    status: string;
+    validatingRoas?: unknown[];
+    error?: string;
+  };
+};
+
+type JsonFetchResult<T> =
+  | { ok: true; data: T; status: number }
+  | { ok: false; error: string; status?: number };
+
+async function fetchJson<T>(
+  url: string | URL,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<JsonFetchResult<T>> {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "pi-redteam-net-lookup/0.1",
+      },
+    });
+    if (!res.ok) {
+      return { ok: false, status: res.status, error: `HTTP ${res.status}` };
+    }
+    return { ok: true, status: res.status, data: (await res.json()) as T };
+  } catch (error) {
+    const timedOut = controller.signal.aborted && !signal?.aborted;
+    return {
+      ok: false,
+      error: timedOut
+        ? `timeout/${timeoutMs}ms`
+        : error instanceof Error
+          ? error.message
+          : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+type RipestatPrefixBody = {
+  status?: string;
+  status_code?: number;
+  data?: {
+    resource?: string;
+    announced?: boolean;
+    is_less_specific?: boolean;
+    asns?: Array<{ asn?: number; holder?: string }>;
+    related_prefixes?: string[];
+    block?: { resource?: string; desc?: string; name?: string };
+  };
+};
+
+export function summarizeRipestat(
+  ip: string,
+  body: RipestatPrefixBody
+): RouteSummary {
+  const data = body.data ?? {};
+  const asn = data.asns?.[0];
+  const prefix = data.resource;
+  const prefixLen = prefixLengthFromCidr(prefix);
+  const usage = classifyBgpUsage({
+    prefix,
+    prefixLen,
+    asnName: asn?.holder,
+    prefixDescription: data.block?.desc,
+  });
+
+  return {
+    ip,
+    asn: asn?.asn != null ? `AS${asn.asn}` : undefined,
+    asnNumber: asn?.asn,
+    asnName: asn?.holder,
+    asnDescription: asn?.holder,
+    prefix,
+    prefixLen,
+    prefixes: (data.related_prefixes ?? []).map((p) => ({ prefix: p })),
+    block: data.block?.resource,
+    announced: data.announced,
+    lessSpecific: data.is_less_specific,
+    classification: usage.classification,
+    classificationReasons: usage.reasons,
+    hint: bgpHint(usage.classification),
+    source: "ripestat",
+  };
+}
+
+/** Team Cymru DNS query name: reversed IPv4 octets or IPv6 nibbles. */
+export function cymruQueryName(ip: string): string {
+  if (IPV4.test(ip)) {
+    return `${ip.split(".").reverse().join(".")}.origin.asn.cymru.com`;
+  }
+  const clean = ip.replace(/^\[|\]$/g, "").split("%")[0]!.toLowerCase();
+  const halves = clean.split("::");
+  if (halves.length > 2) throw new Error(`无效 IPv6: ${ip}`);
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - head.length - tail.length;
+  if (missing < 0) throw new Error(`无效 IPv6: ${ip}`);
+  const nibbles = [
+    ...head,
+    ...Array.from({ length: missing }, () => "0"),
+    ...tail,
+  ]
+    .flatMap((group) => group.padStart(4, "0").split(""))
+    .reverse();
+  return `${nibbles.join(".")}.origin6.asn.cymru.com`;
+}
+
+function txtValue(data: string): string {
+  const quoted = data.match(/"(?:[^"\\]|\\.)*"/g);
+  return quoted?.length ? quoted.map((part) => part.slice(1, -1)).join("") : data;
+}
+
+export type CymruOrigin = {
+  asn?: number;
+  prefix?: string;
+  country?: string;
+  rir?: string;
+  allocated?: string;
+};
+
+export function parseCymruOrigin(text: string): CymruOrigin {
+  const parts = (text.split(/\r?\n/)[0] ?? "")
+    .split("|")
+    .map((part) => part.trim());
+  const asn = Number((parts[0] ?? "").split(/\s+/)[0]);
+  return {
+    asn: Number.isFinite(asn) ? asn : undefined,
+    prefix: parts[1] || undefined,
+    country: parts[2] || undefined,
+    rir: parts[3] || undefined,
+    allocated: parts[4] || undefined,
+  };
+}
+
+export function parseCymruAsn(text: string): {
+  name?: string;
+  country?: string;
+  rir?: string;
+  allocated?: string;
+} {
+  const parts = (text.split(/\r?\n/)[0] ?? "")
+    .split("|")
+    .map((part) => part.trim());
+  return {
+    country: parts[1] || undefined,
+    rir: parts[2] || undefined,
+    allocated: parts[3] || undefined,
+    name: parts.slice(4).join(" | ") || undefined,
+  };
+}
+
+type CymruResult =
+  | { ok: true; summary: RouteSummary; url: string; raw: Record<string, unknown> }
+  | { ok: false; error: string; url: string };
+
+async function queryCymru(
+  ip: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<CymruResult> {
+  let queryName: string;
+  try {
+    queryName = cymruQueryName(ip);
+  } catch (error) {
+    return {
+      ok: false,
+      url: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const url = `dns:${queryName}`;
+  const dohTimeoutMs = Math.min(timeoutMs, 8000);
+  try {
+    const originRes = await queryDoh(queryName, "TXT", AUTO_DOH_ENDPOINTS, {
+      timeoutMs: dohTimeoutMs,
+      signal,
+    });
+    const originRecord = originRes.answers.find((answer) => answer.type === 16);
+    if (!originRecord) {
+      return { ok: false, url, error: "Cymru: no TXT answer" };
+    }
+    const origin = parseCymruOrigin(txtValue(originRecord.data));
+    if (origin.asn === undefined) {
+      return { ok: false, url, error: "Cymru: unparseable origin" };
+    }
+
+    let asnInfo: ReturnType<typeof parseCymruAsn> = {};
+    try {
+      const asnRes = await queryDoh(
+        `AS${origin.asn}.asn.cymru.com`,
+        "TXT",
+        AUTO_DOH_ENDPOINTS,
+        { timeoutMs: dohTimeoutMs, signal }
+      );
+      const asnRecord = asnRes.answers.find((answer) => answer.type === 16);
+      if (asnRecord) asnInfo = parseCymruAsn(txtValue(asnRecord.data));
+    } catch {
+      // The origin record is still useful without the AS description.
+    }
+
+    const prefixLen = prefixLengthFromCidr(origin.prefix);
+    const usage = classifyBgpUsage({
+      prefix: origin.prefix,
+      prefixLen,
+      asnName: asnInfo.name,
+    });
+
+    const summary: RouteSummary = {
+      ip,
+      asn: `AS${origin.asn}`,
+      asnNumber: origin.asn,
+      asnName: asnInfo.name,
+      asnDescription: asnInfo.name,
+      asnCountry: asnInfo.country ?? origin.country,
+      prefix: origin.prefix,
+      prefixLen,
+      rir: origin.rir ?? asnInfo.rir,
+      rirAllocation: origin.prefix,
+      rirCountry: origin.country,
+      country: origin.country,
+      allocated: origin.allocated ?? asnInfo.allocated,
+      prefixes: [],
+      classification: usage.classification,
+      classificationReasons: usage.reasons,
+      hint: bgpHint(usage.classification),
+      source: "cymru",
+    };
+
+    return {
+      ok: true,
+      summary,
+      url,
+      raw: {
+        query: queryName,
+        origin: txtValue(originRecord.data),
+        asn: asnInfo.name,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      url,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function queryRpki(
+  asnNumber: number,
+  prefix: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<RouteSummary["rpki"]> {
+  const url = new URL("https://stat.ripe.net/data/rpki-validation/data.json");
+  url.searchParams.set("resource", `AS${asnNumber}`);
+  url.searchParams.set("prefix", prefix);
+  const result = await fetchJson<{
+    data?: { status?: string; validating_roas?: unknown[] };
+  }>(url, timeoutMs, signal);
+  if (!result.ok) return { status: "unknown", error: result.error };
+  return {
+    status: result.data?.data?.status ?? "unknown",
+    validatingRoas: result.data?.data?.validating_roas,
+  };
+}
+
+type RipestatResult =
+  | {
+      ok: true;
+      summary: RouteSummary;
+      url: string;
+      raw: unknown;
+    }
+  | { ok: false; error: string; url: string };
+
+async function queryRipestat(
+  ip: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<RipestatResult> {
+  const url = new URL("https://stat.ripe.net/data/prefix-overview/data.json");
+  url.searchParams.set("resource", ip);
+  const result = await fetchJson<RipestatPrefixBody>(url, timeoutMs, signal);
+  if (!result.ok) {
+    return { ok: false, url: url.toString(), error: result.error };
+  }
+  if (!result.data?.data) {
+    return { ok: false, url: url.toString(), error: "RIPEstat: empty response" };
+  }
+
+  const summary = summarizeRipestat(ip, result.data);
+  let rpki: RouteSummary["rpki"];
+  if (summary.asnNumber != null && summary.prefix) {
+    rpki = await queryRpki(summary.asnNumber, summary.prefix, timeoutMs, signal);
+    if (rpki) summary.rpki = rpki;
+  }
+
+  return {
+    ok: true,
+    summary,
+    url: url.toString(),
+    raw: { prefixOverview: result.data, rpki },
+  };
+}
+
+export type InternetDbSummary = {
+  ip: string;
+  ports: number[];
+  hostnames: string[];
+  cpes: string[];
+  tags: string[];
+  vulns: string[];
+};
+
+export function parseInternetDb(
+  body: unknown,
+  ip: string
+): InternetDbSummary | null {
+  if (!body || typeof body !== "object") return null;
+  const row = body as Record<string, unknown>;
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? [
+          ...new Set(
+            value
+              .filter((item): item is string => typeof item === "string")
+              .map((item) => item.trim())
+              .filter(Boolean)
+          ),
+        ]
+      : [];
+  const numbers = (value: unknown): number[] =>
+    Array.isArray(value)
+      ? [
+          ...new Set(
+            value
+              .filter((item): item is number => typeof item === "number")
+              .map((item) => Math.trunc(item))
+          ),
+        ].sort((a, b) => a - b)
+      : [];
+
+  return {
+    ip,
+    ports: numbers(row.ports),
+    hostnames: strings(row.hostnames),
+    cpes: strings(row.cpes),
+    tags: strings(row.tags),
+    vulns: strings(row.vulns),
+  };
+}
+
+type InternetDbResult =
+  | { ok: true; summary: InternetDbSummary; url: string }
+  | { ok: false; url: string; error: string; skipped?: boolean };
+
+async function queryInternetDb(
+  ip: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<InternetDbResult> {
+  if (!IPV4.test(ip)) {
+    return {
+      ok: false,
+      url: "",
+      error: "Shodan InternetDB 仅支持 IPv4",
+      skipped: true,
+    };
+  }
+  const url = `https://internetdb.shodan.io/${encodeURIComponent(ip)}`;
+  const result = await fetchJson<unknown>(url, timeoutMs, signal);
+  if (!result.ok) {
+    return {
+      ok: false,
+      url,
+      error: result.status === 404 ? "no record" : `InternetDB: ${result.error}`,
+      skipped: result.status === 404,
+    };
+  }
+  const summary = parseInternetDb(result.data, ip);
+  if (!summary) {
+    return { ok: false, url, error: "InternetDB: invalid response" };
+  }
+  return { ok: true, summary, url };
+}
+
+function mergeCymru(summary: RouteSummary, cymru: RouteSummary): RouteSummary {
+  return {
+    ...summary,
+    rir: summary.rir ?? cymru.rir,
+    rirAllocation: summary.rirAllocation ?? cymru.rirAllocation,
+    rirCountry: summary.rirCountry ?? cymru.country,
+    asnCountry: summary.asnCountry ?? cymru.country,
+    asnDescription: summary.asnDescription ?? cymru.asnDescription,
+    allocated: summary.allocated ?? cymru.allocated,
+  };
+}
+
+export type RoutingResult =
+  | {
+      ok: true;
+      summary: RouteSummary;
+      url: string;
+      source: string;
+      raw: unknown;
+    }
+  | { ok: false; url: string; error: string; skipped?: boolean };
+
+/**
+ * Routing view with source fallback:
+ * RIPEstat (primary, RPKI) + Team Cymru (RIR/allocation enrichment) run in
+ * parallel; BGPView is only queried if RIPEstat fails.
+ */
+export async function runRouting(
+  host: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<RoutingResult> {
+  const [ripestat, cymru] = await Promise.all([
+    queryRipestat(host, timeoutMs, signal),
+    queryCymru(host, timeoutMs, signal),
+  ]);
+
+  if (ripestat.ok) {
+    return {
+      ok: true,
+      summary: cymru.ok ? mergeCymru(ripestat.summary, cymru.summary) : ripestat.summary,
+      url: ripestat.url,
+      source: "ripestat",
+      raw: ripestat.raw,
+    };
+  }
+
+  const bgp = await runBgp(host, timeoutMs, signal);
+  if (bgp.ok) {
+    const summary: RouteSummary = { ...bgp.summary, source: "bgpview" };
+    return {
+      ok: true,
+      summary: cymru.ok ? mergeCymru(summary, cymru.summary) : summary,
+      url: bgp.url,
+      source: "bgpview",
+      raw: bgp.data,
+    };
+  }
+
+  if (cymru.ok) {
+    return {
+      ok: true,
+      summary: cymru.summary,
+      url: cymru.url,
+      source: "cymru",
+      raw: cymru.raw,
+    };
+  }
+
+  return {
+    ok: false,
+    url: ripestat.url,
+    error: `RIPEstat: ${ripestat.error}; Cymru: ${cymru.error}; BGPView: ${bgp.error}`,
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -715,7 +1227,7 @@ async function runWhois(
  * Combined assessment
  * ------------------------------------------------------------------ */
 
-type BgpSummary = ReturnType<typeof summarizeBgpView>;
+type BgpSummary = RouteSummary;
 type RdapSummary = ReturnType<typeof summarizeRdap>;
 
 const STOP_WORDS = new Set([
@@ -843,7 +1355,7 @@ export default function (pi: ExtensionAPI) {
     name: "net_lookup",
     label: "Network Lookup",
     description:
-      "网络归属查询。mode=auto（默认）IP 联合 BGP+RDAP、域名仅 RDAP；mode=bgp 查 ASN/前缀并区分接入网与基础设施；mode=whois 查 RDAP/WHOIS 注册信息（IP/域名，含 JPNIC）；mode=all 强制联合并交叉研判。",
+      "网络归属查询。mode=auto（默认）IP 联合路由+RDAP、域名仅 RDAP；mode=bgp 查 ASN/前缀（RIPEstat 主源，Team Cymru/BGPView 兜底）并含 RPKI 状态；mode=whois 查 RDAP/WHOIS（IP/域名，含 JPNIC）；mode=all 强制联合并交叉研判，enrich=true 时附加 Shodan InternetDB 主机信息。",
     parameters: Type.Object({
       target: Type.Optional(Type.String({ description: "IP、域名或 URL" })),
       input: Type.Optional(Type.String({ description: "IP、域名或 URL" })),
@@ -862,6 +1374,12 @@ export default function (pi: ExtensionAPI) {
         Type.Boolean({
           description:
             "true 时返回原始数据（需明确 mode=bgp 或 mode=whois）",
+        })
+      ),
+      enrich: Type.Optional(
+        Type.Boolean({
+          description:
+            "all 模式附加 Shodan InternetDB（端口/hostnames/tags/vulns），默认 true",
         })
       ),
       timeout_seconds: Type.Optional(Type.Number({ description: "超时秒数，默认 20" })),
@@ -909,14 +1427,14 @@ export default function (pi: ExtensionAPI) {
       const target = rawInput.trim();
 
       if (mode === "bgp") {
-        if (!isIp || !IPV4.test(host)) {
+        if (!isIp) {
           return {
-            content: [{ type: "text", text: "bgp 模式仅支持 IPv4" }],
+            content: [{ type: "text", text: "bgp 模式仅支持 IP" }],
             details: {},
             isError: true,
           };
         }
-        const result = await runBgp(host, timeoutMs, signal);
+        const result = await runRouting(host, timeoutMs, signal);
         if (!result.ok) {
           const err = {
             lookup: "bgp",
@@ -940,15 +1458,15 @@ export default function (pi: ExtensionAPI) {
                 ip: host,
                 url: result.url,
                 mode: "raw",
-                provider: "bgpview",
-                bgpview: result.data,
+                provider: result.source,
+                raw: result.raw,
               }
             : {
                 lookup: "bgp",
                 target,
                 url: result.url,
                 mode: "summary",
-                provider: "bgpview",
+                provider: result.source,
                 ...result.summary,
               };
         return {
@@ -1029,42 +1547,39 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      const ipv4 = IPV4.test(host);
-      const bgpPromise: Promise<BgpResult> = ipv4
-        ? runBgp(host, timeoutMs, signal)
-        : Promise.resolve({
-            ok: false as const,
-            url: "",
-            error: "BGPView 仅支持 IPv4，已跳过 BGP",
-            skipped: true,
-          });
-      const [bgpResult, whoisResult] = await Promise.all([
-        bgpPromise,
+      const enrich = params.enrich !== false;
+      const enrichPromise: Promise<InternetDbResult | null> = enrich
+        ? queryInternetDb(host, timeoutMs, signal)
+        : Promise.resolve(null);
+
+      const [routing, whoisResult, internet] = await Promise.all([
+        runRouting(host, timeoutMs, signal),
         runWhois(host, true, gateway, timeoutMs, signal),
+        enrichPromise,
       ]);
 
       const assessment = assessNetwork({
         ip: host,
-        bgp: bgpResult.ok ? bgpResult.summary : undefined,
+        bgp: routing.ok ? routing.summary : undefined,
         rdap: whoisResult.ok ? whoisResult.summary : undefined,
         rdapSource: whoisResult.ok ? whoisResult.source : undefined,
       });
 
       const sources: Array<Record<string, unknown>> = [
-        bgpResult.ok
+        routing.ok
           ? {
-              provider: "bgpview",
+              provider: routing.source,
               ok: true,
-              url: bgpResult.url,
-              asn: bgpResult.summary.asn,
-              prefix: bgpResult.summary.prefix,
+              url: routing.url,
+              asn: routing.summary.asn,
+              prefix: routing.summary.prefix,
+              rpki: routing.summary.rpki?.status,
             }
           : {
-              provider: "bgpview",
+              provider: "routing",
               ok: false,
-              url: bgpResult.url || undefined,
-              error: bgpResult.error,
-              skipped: bgpResult.skipped || undefined,
+              url: routing.url || undefined,
+              error: routing.error,
             },
         whoisResult.ok
           ? {
@@ -1081,13 +1596,35 @@ export default function (pi: ExtensionAPI) {
             },
       ];
 
+      if (internet) {
+        sources.push(
+          internet.ok
+            ? {
+                provider: "shodan-internetdb",
+                ok: true,
+                url: internet.url,
+                ports: internet.summary.ports.length,
+                hostnames: internet.summary.hostnames.length,
+                vulns: internet.summary.vulns.length,
+              }
+            : {
+                provider: "shodan-internetdb",
+                ok: false,
+                url: internet.url || undefined,
+                error: internet.error,
+                skipped: internet.skipped || undefined,
+              }
+        );
+      }
+
       const payload = {
         lookup: "all",
         target,
         host,
         kind: "ip",
-        route: bgpResult.ok ? bgpResult.summary : undefined,
+        route: routing.ok ? routing.summary : undefined,
         registration: whoisResult.ok ? whoisResult.summary : undefined,
+        internetdb: internet?.ok ? internet.summary : undefined,
         assessment,
         sources,
       };
@@ -1095,7 +1632,7 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
         details: payload,
-        isError: !bgpResult.ok && !whoisResult.ok,
+        isError: !routing.ok && !whoisResult.ok,
       };
     },
   });

@@ -2,16 +2,23 @@
  * DNS extension for Pi Coding Agent.
  *
  * One tool, two modes:
- * - `records` (default): active DNS lookups via the system resolver or a
- *   named nameserver. No API key required.
- * - `passive`: passive DNS / certificate transparency via crt.sh, plus
- *   SecurityTrails (if configured) or HackerTarget for IP reverse lookup.
+ * - `records` (default): active DNS lookups via the system resolver, a named
+ *   nameserver, or DNS-over-HTTPS. DoH also exposes the DNSSEC AD flag.
+ * - `passive`: passive DNS / certificate transparency via crt.sh, AlienVault
+ *   OTX (IP path) and the Wayback CDX index, plus SecurityTrails (if
+ *   configured) or HackerTarget for IP reverse lookup.
  */
 import { Resolver, promises as dnsPromises } from "node:dns";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getSettingString, readSettings } from "../../_shared/settings.ts";
+import {
+  dnsStatusName,
+  queryDoh,
+  resolveDohEndpoint,
+  type DohAnswer,
+} from "../../_shared/doh.ts";
 
 const IPV4 =
   /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
@@ -170,12 +177,166 @@ async function resolveOne(
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * records mode: DNS-over-HTTPS transport
+ * ------------------------------------------------------------------ */
+
+export type DnsTransport = "auto" | "system" | "doh";
+
+export function normalizeTransport(raw: unknown): DnsTransport | undefined {
+  const v = String(raw ?? "auto").trim().toLowerCase();
+  if (!v || v === "auto") return "auto";
+  if (v === "system" || v === "dns") return "system";
+  if (v === "doh" || v === "https") return "doh";
+  return undefined;
+}
+
+/** Optional DoH endpoint: settings.json `redteam.dns-lookup.dohServer`. */
+export function loadDohServer(): string | undefined {
+  return getSettingString(readSettings(), "redteam.dns-lookup.dohServer");
+}
+
+/** Build the `.in-addr.arpa` / `.ip6.arpa` name used for PTR queries. */
+export function reverseName(ip: string): string {
+  const clean = ip.trim().replace(/^\[|\]$/g, "").split("%")[0]!.toLowerCase();
+  if (IPV4.test(clean)) {
+    return `${clean.split(".").reverse().join(".")}.in-addr.arpa`;
+  }
+  const halves = clean.split("::");
+  if (halves.length > 2) throw new Error(`无效 IPv6: ${ip}`);
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - head.length - tail.length;
+  if (missing < 0) throw new Error(`无效 IPv6: ${ip}`);
+  const groups = [
+    ...head,
+    ...Array.from({ length: missing }, () => "0"),
+    ...tail,
+  ];
+  const nibbles = groups
+    .flatMap((group) => group.padStart(4, "0").split(""))
+    .reverse();
+  return `${nibbles.join(".")}.ip6.arpa`;
+}
+
+const TYPE_NUMBERS: Record<DnsType, number> = {
+  A: 1,
+  NS: 2,
+  CNAME: 5,
+  SOA: 6,
+  PTR: 12,
+  MX: 15,
+  TXT: 16,
+  AAAA: 28,
+  SRV: 33,
+  CAA: 257,
+};
+
+function unquoteTxt(data: string): string {
+  const quoted = data.match(/"(?:[^"\\]|\\.)*"/g);
+  if (!quoted?.length) return data;
+  return quoted
+    .map((part) => part.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\"))
+    .join("");
+}
+
+/** Convert DoH `Answer[]` into the same shapes the system resolver returns. */
+export function parseDohAnswers(type: DnsType, answers: DohAnswer[]): unknown[] {
+  const matching = answers.filter((answer) => answer.type === TYPE_NUMBERS[type]);
+  const noDot = (value: string) => value.replace(/\.$/, "");
+
+  switch (type) {
+    case "A":
+    case "AAAA":
+    case "NS":
+    case "CNAME":
+    case "PTR":
+      return matching.map((answer) => noDot(answer.data));
+    case "MX":
+      return matching.map((answer) => {
+        const m = answer.data.match(/^(\d+)\s+(\S+)$/);
+        return m
+          ? { priority: Number(m[1]), exchange: noDot(m[2]!) }
+          : answer.data;
+      });
+    case "TXT":
+      return matching.map((answer) => unquoteTxt(answer.data));
+    case "SOA":
+      return matching.map((answer) => {
+        const p = answer.data.trim().split(/\s+/);
+        if (p.length < 7) return answer.data;
+        return {
+          nsname: noDot(p[0]!),
+          hostmaster: noDot(p[1]!),
+          serial: Number(p[2]),
+          refresh: Number(p[3]),
+          retry: Number(p[4]),
+          expire: Number(p[5]),
+          minttl: Number(p[6]),
+        };
+      });
+    case "SRV":
+      return matching.map((answer) => {
+        const p = answer.data.trim().split(/\s+/);
+        if (p.length < 4) return answer.data;
+        return {
+          priority: Number(p[0]),
+          weight: Number(p[1]),
+          port: Number(p[2]),
+          name: noDot(p[3]!),
+        };
+      });
+    case "CAA":
+      return matching.map((answer) => {
+        const m = answer.data.match(/^(\d+)\s+(\S+)\s+"?(.*?)"?$/);
+        return m ? { critical: Number(m[1]), [m[2]!]: m[3] } : answer.data;
+      });
+    default:
+      return matching.map((answer) => answer.data);
+  }
+}
+
+async function resolveViaDoh(
+  host: string,
+  isIp: boolean,
+  type: DnsType,
+  endpoints: string[],
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<{ value: unknown; authenticated?: boolean; endpoint: string }> {
+  if (isIp && type !== "PTR") {
+    if (type === "A") {
+      return { value: IPV4.test(host) ? [host] : [], endpoint: "" };
+    }
+    if (type === "AAAA") {
+      return { value: IPV4.test(host) ? [] : [host], endpoint: "" };
+    }
+    return { value: [], endpoint: "" };
+  }
+  if (type === "PTR" && !isIp) return { value: [], endpoint: "" };
+
+  const name = type === "PTR" ? reverseName(host) : host;
+  const result = await queryDoh(name, type, endpoints, { timeoutMs, signal });
+  if (result.status !== 0) {
+    throw new Error(`${dnsStatusName(result.status)} (${result.status})`);
+  }
+  return {
+    value: parseDohAnswers(type, result.answers),
+    authenticated: result.authenticated,
+    endpoint: result.endpoint,
+  };
+}
+
 async function runRecords(
   raw: string,
   params: {
     types?: string[];
     nameserver?: string;
-  }
+    transport?: string;
+    doh_server?: string;
+    timeout_seconds?: number;
+  },
+  signal?: AbortSignal
 ) {
   let host: string;
   let isIp: boolean;
@@ -190,25 +351,50 @@ async function runRecords(
     };
   }
 
-  const nameserver = params.nameserver?.trim() || undefined;
-  let api = createDnsApi(nameserver);
-  let usedNs = nameserver ?? "system";
+  const requestedTransport = normalizeTransport(params.transport);
+  if (!requestedTransport) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `不支持的 transport: ${params.transport}（可选 auto、system、doh）`,
+        },
+      ],
+      details: {},
+      isError: true,
+    };
+  }
 
+  const nameserver = params.nameserver?.trim() || undefined;
+  const doh = resolveDohEndpoint(params.doh_server ?? loadDohServer() ?? "auto");
+  if (doh.error && !nameserver && requestedTransport === "doh") {
+    return {
+      content: [{ type: "text", text: doh.error }],
+      details: {},
+      isError: true,
+    };
+  }
+
+  const dohTimeoutMs = Math.max(3, params.timeout_seconds ?? 12) * 1000;
   const requested = (params.types?.length
     ? params.types.map((t) => t.toUpperCase())
     : [...DEFAULT_TYPES]) as string[];
 
   const records: Record<string, unknown> = {};
   const errors: Record<string, string> = {};
+  const dnssecChecks: boolean[] = [];
+  let transportUsed: "system" | "doh" = "system";
+  let nameserverUsed = nameserver ?? "system";
+  let dohEndpoint: string | undefined;
 
-  async function runAll(dnsApi: DnsApi) {
+  async function runAll(resolve: (type: DnsType) => Promise<unknown>) {
     for (const type of requested) {
       if (!(ALL_TYPES as readonly string[]).includes(type)) {
         errors[type] = "unsupported type";
         continue;
       }
       try {
-        records[type] = await resolveOne(dnsApi, host, isIp, type as DnsType);
+        records[type] = await resolve(type as DnsType);
         delete errors[type];
       } catch (error) {
         const code =
@@ -221,18 +407,60 @@ async function runRecords(
     }
   }
 
-  await runAll(api);
+  function resetResults() {
+    Object.keys(records).forEach((key) => delete records[key]);
+    Object.keys(errors).forEach((key) => delete errors[key]);
+  }
 
-  // System resolver often broken on locked-down Windows — retry via public DNS
-  const transportFail = Object.values(errors).some((m) =>
-    /ECONNREFUSED|ETIMEOUT|ENOTFOUND|EAI_AGAIN/i.test(m)
-  );
-  if (!nameserver && transportFail) {
-    usedNs = "8.8.8.8 (fallback)";
-    api = createDnsApi("8.8.8.8");
-    Object.keys(records).forEach((k) => delete records[k]);
-    Object.keys(errors).forEach((k) => delete errors[k]);
-    await runAll(api);
+  function transportFailed(): boolean {
+    return Object.values(errors).some((message) =>
+      /ECONNREFUSED|ETIMEDOUT|ETIMEOUT|ENOTFOUND|EAI_AGAIN|ESERVFAIL/i.test(message)
+    );
+  }
+
+  const systemApi = createDnsApi(nameserver);
+  const runSystem = () => {
+    transportUsed = "system";
+    nameserverUsed = nameserver ?? "system";
+    return runAll((type) => resolveOne(systemApi, host, isIp, type));
+  };
+  const runDoh = () => {
+    transportUsed = "doh";
+    dnssecChecks.length = 0;
+    return runAll(async (type) => {
+      const result = await resolveViaDoh(
+        host,
+        isIp,
+        type,
+        doh.endpoints,
+        dohTimeoutMs,
+        signal
+      );
+      if (result.endpoint) dohEndpoint = result.endpoint;
+      if (result.authenticated !== undefined) {
+        dnssecChecks.push(result.authenticated);
+      }
+      return result.value;
+    });
+  };
+
+  if (nameserver) {
+    // An explicit resolver address always means the system resolver path.
+    await runSystem();
+  } else if (requestedTransport === "doh") {
+    await runDoh();
+  } else {
+    await runSystem();
+    if (requestedTransport === "auto" && transportFailed()) {
+      resetResults();
+      await runDoh();
+    } else if (requestedTransport === "system" && transportFailed()) {
+      // System resolver often broken on locked-down Windows — retry via 8.8.8.8
+      resetResults();
+      nameserverUsed = "8.8.8.8 (fallback)";
+      const fallbackApi = createDnsApi("8.8.8.8");
+      await runAll((type) => resolveOne(fallbackApi, host, isIp, type));
+    }
   }
 
   const payload = {
@@ -240,7 +468,19 @@ async function runRecords(
     target: raw.trim(),
     host,
     isIp,
-    nameserver: usedNs,
+    transport: transportUsed,
+    nameserver: nameserverUsed,
+    ...(transportUsed === "doh"
+      ? { dohServer: dohEndpoint ?? doh.endpoints[0] }
+      : {}),
+    ...(transportUsed === "doh" && dnssecChecks.length > 0
+      ? {
+          dnssec: {
+            authenticated: dnssecChecks.every(Boolean),
+            checked: dnssecChecks.length,
+          },
+        }
+      : {}),
     records,
     ...(Object.keys(errors).length ? { errors } : {}),
   };
@@ -422,9 +662,209 @@ async function querySecurityTrailsIp(
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * passive mode: additional free sources
+ * ------------------------------------------------------------------ */
+
+export type PassiveSource = "crt.sh" | "otx" | "wayback";
+
+/**
+ * Defaults differ by target type because OTX's domain endpoint now requires
+ * authentication, while its IPv4 endpoint still answers anonymously.
+ */
+export function normalizePassiveSources(
+  raw: unknown,
+  kind: "domain" | "ip" = "domain"
+): PassiveSource[] {
+  const defaults: PassiveSource[] =
+    kind === "domain" ? ["crt.sh", "wayback"] : ["crt.sh", "otx"];
+  const items = Array.isArray(raw)
+    ? raw
+    : typeof raw === "string"
+      ? raw.split(",")
+      : [];
+  const out = new Set<PassiveSource>();
+  for (const item of items) {
+    const v = String(item).trim().toLowerCase();
+    if (!v) continue;
+    if (v === "all") return kind === "domain"
+      ? ["crt.sh", "otx", "wayback"]
+      : ["crt.sh", "otx", "wayback"];
+    if (v === "crt.sh" || v === "crtsh" || v === "crt") out.add("crt.sh");
+    else if (v === "otx" || v === "alienvault") out.add("otx");
+    else if (v === "wayback" || v === "web.archive.org") out.add("wayback");
+  }
+  return out.size > 0 ? [...out] : defaults;
+}
+
+export function parseOtxPassiveDns(body: unknown): string[] {
+  const rows = (body as { passive_dns?: Array<{ hostname?: unknown }> })
+    ?.passive_dns;
+  if (!Array.isArray(rows)) return [];
+  return uniqSorted(
+    rows
+      .map((row) => String(row?.hostname ?? "").trim().replace(/^\*\./, ""))
+      .filter((name) => name && !name.includes(" ")),
+    500
+  );
+}
+
+async function queryOtx(
+  target: string,
+  kind: "domain" | "ip",
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<{ names: string[]; count: number; error?: string }> {
+  const path = kind === "ip" ? "IPv4" : "domain";
+  const url = `https://otx.alienvault.com/api/v1/indicators/${path}/${encodeURIComponent(target)}/passive_dns`;
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "pi-redteam-dns/0.1",
+      },
+    });
+    if (!res.ok) {
+      return { names: [], count: 0, error: `otx HTTP ${res.status}` };
+    }
+    const body = (await res.json()) as {
+      detail?: unknown;
+      passive_dns?: unknown[];
+    };
+    if (body?.detail) {
+      return {
+        names: [],
+        count: 0,
+        error: `otx: ${String(body.detail).slice(0, 160)}`,
+      };
+    }
+    const count = Array.isArray(body?.passive_dns) ? body.passive_dns.length : 0;
+    return { names: parseOtxPassiveDns(body), count };
+  } catch (error) {
+    const timedOut = controller.signal.aborted && !signal?.aborted;
+    return {
+      names: [],
+      count: 0,
+      error: timedOut
+        ? `otx timeout/${timeoutMs}ms`
+        : error instanceof Error
+          ? error.message
+          : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/** Extract in-scope hostnames from a Wayback CDX JSON response. */
+export function parseWaybackHostnames(body: unknown, domain: string): string[] {
+  if (!Array.isArray(body)) return [];
+  const hosts: string[] = [];
+  for (const row of body) {
+    const original = Array.isArray(row) ? row[0] : undefined;
+    if (typeof original !== "string") continue;
+    try {
+      const host = stripPort(new URL(original).hostname).toLowerCase();
+      if (host === domain || host.endsWith(`.${domain}`)) hosts.push(host);
+    } catch {
+      /* the first row is a header, and malformed URLs are not evidence */
+    }
+  }
+  return uniqSorted(hosts, 500);
+}
+
+async function queryWayback(
+  domain: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  max = 500
+): Promise<{ names: string[]; count: number; error?: string }> {
+  const url = new URL("https://web.archive.org/cdx/search/cdx");
+  url.searchParams.set("url", domain);
+  url.searchParams.set("matchType", "domain");
+  url.searchParams.set("output", "json");
+  url.searchParams.set("fl", "original");
+  url.searchParams.set("collapse", "urlkey");
+  url.searchParams.set("limit", String(max));
+
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "pi-redteam-dns/0.1",
+      },
+    });
+    if (!res.ok) {
+      return { names: [], count: 0, error: `wayback HTTP ${res.status}` };
+    }
+    const text = await res.text();
+    if (!text.trim()) return { names: [], count: 0 };
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return { names: [], count: 0, error: "wayback returned non-JSON" };
+    }
+    const names = parseWaybackHostnames(body, domain);
+    return { names, count: names.length };
+  } catch (error) {
+    const timedOut = controller.signal.aborted && !signal?.aborted;
+    return {
+      names: [],
+      count: 0,
+      error: timedOut
+        ? `wayback timeout/${timeoutMs}ms`
+        : error instanceof Error
+          ? error.message
+          : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+type SourceResult = {
+  provider: string;
+  names: string[];
+  count: number;
+  error?: string;
+};
+
+async function settleSource(
+  provider: string,
+  promise: Promise<{ names: string[]; count: number; error?: string }>
+): Promise<SourceResult> {
+  try {
+    return { provider, ...(await promise) };
+  } catch (error) {
+    return {
+      provider,
+      names: [],
+      count: 0,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function runPassive(
   raw: string,
-  params: { timeout_seconds?: number; limit?: number },
+  params: {
+    timeout_seconds?: number;
+    limit?: number;
+    sources?: unknown;
+  },
   signal?: AbortSignal
 ) {
   let resolved: { target: string; kind: "ip" | "domain" };
@@ -440,19 +880,38 @@ async function runPassive(
   }
 
   const timeoutMs = Math.max(5, params.timeout_seconds ?? 25) * 1000;
+  const sourceTimeoutMs = Math.min(timeoutMs, 15000);
   const limit = Math.max(1, Math.min(500, params.limit ?? 100));
   const sources: Array<Record<string, unknown>> = [];
 
   try {
     if (resolved.kind === "domain") {
-      const crt = await queryCrtSh(resolved.target, timeoutMs, signal);
-      sources.push({
-        provider: "crt.sh",
-        query: resolved.target,
-        recordCount: crt.count,
-        error: crt.error,
-      });
-      const domains = crt.names.slice(0, limit);
+      const selected = normalizePassiveSources(params.sources, "domain");
+      const jobs: Array<Promise<SourceResult>> = [];
+      if (selected.includes("crt.sh")) {
+        jobs.push(settleSource("crt.sh", queryCrtSh(resolved.target, sourceTimeoutMs, signal)));
+      }
+      if (selected.includes("otx")) {
+        jobs.push(settleSource("otx", queryOtx(resolved.target, "domain", sourceTimeoutMs, signal)));
+      }
+      if (selected.includes("wayback")) {
+        jobs.push(settleSource("wayback", queryWayback(resolved.target, sourceTimeoutMs, signal, 500)));
+      }
+
+      const results = await Promise.all(jobs);
+      for (const result of results) {
+        sources.push({
+          provider: result.provider,
+          query: resolved.target,
+          recordCount: result.count,
+          error: result.error,
+        });
+      }
+
+      const domains = uniqSorted(
+        results.flatMap((result) => result.names),
+        limit
+      );
       const payload = {
         mode: "passive",
         target: raw.trim(),
@@ -465,11 +924,22 @@ async function runPassive(
       return {
         content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
         details: payload,
-        isError: Boolean(crt.error && domains.length === 0),
+        isError:
+          domains.length === 0 &&
+          results.length > 0 &&
+          results.every((result) => result.error),
       };
     }
 
     // IP path
+    const selected = normalizePassiveSources(params.sources, "ip");
+    const crtTask = selected.includes("crt.sh")
+      ? settleSource("crt.sh", queryCrtSh(resolved.target, sourceTimeoutMs, signal))
+      : null;
+    const otxTask = selected.includes("otx")
+      ? settleSource("otx", queryOtx(resolved.target, "ip", sourceTimeoutMs, signal))
+      : null;
+
     const stKey = loadSecurityTrailsKey();
     let domains: string[] = [];
 
@@ -495,19 +965,29 @@ async function runPassive(
       domains = ht.domains;
     }
 
-    // Also try crt.sh with IP identity (often empty, cheap)
-    const crt = await queryCrtSh(resolved.target, Math.min(timeoutMs, 15000), signal);
-    sources.push({
-      provider: "crt.sh",
-      query: resolved.target,
-      recordCount: crt.count,
-      error: crt.error,
-    });
-    if (crt.names.length) {
+    const crt = crtTask ? await crtTask : null;
+    if (crt) {
+      sources.push({
+        provider: crt.provider,
+        query: resolved.target,
+        recordCount: crt.count,
+        error: crt.error,
+      });
       domains = uniqSorted([...domains, ...crt.names], limit);
-    } else {
-      domains = domains.slice(0, limit);
     }
+
+    const otx = otxTask ? await otxTask : null;
+    if (otx) {
+      sources.push({
+        provider: otx.provider,
+        query: resolved.target,
+        recordCount: otx.count,
+        error: otx.error,
+      });
+      domains = uniqSorted([...domains, ...otx.names], limit);
+    }
+
+    domains = domains.slice(0, limit);
 
     const payload = {
       mode: "passive",
@@ -561,7 +1041,7 @@ export default function (pi: ExtensionAPI) {
     name: "dns_lookup",
     label: "DNS Lookup",
     description:
-      "DNS 查询工具。mode=records（默认）主动查询记录（A/AAAA/PTR/NS/MX/TXT/CNAME/SOA/SRV/CAA），支持 nameserver 指定解析器与 IPv6 PTR；mode=passive 被动 DNS/证书透明度：域名查 crt.sh，IP 查历史关联域名。",
+      "DNS 查询工具。mode=records（默认）主动查询记录（A/AAAA/PTR/NS/MX/TXT/CNAME/SOA/SRV/CAA），支持 nameserver、DoH（含 DNSSEC AD）与 IPv6 PTR；mode=passive 被动 DNS：crt.sh + Wayback，IP 另查 OTX/SecurityTrails/HackerTarget。",
     parameters: Type.Object({
       target: Type.Optional(Type.String({ description: "IP、域名或 URL" })),
       input: Type.Optional(Type.String({ description: "IP、域名或 URL" })),
@@ -583,6 +1063,24 @@ export default function (pi: ExtensionAPI) {
             "records 模式可选 DNS 服务器 IP（如 8.8.8.8 / 1.1.1.1），省略用系统解析器",
         })
       ),
+      transport: Type.Optional(
+        Type.String({
+          description:
+            "records 传输方式：auto（默认，系统失败时走 DoH）| system | doh",
+        })
+      ),
+      doh_server: Type.Optional(
+        Type.String({
+          description:
+            "DoH 服务器：auto（默认）| google | cloudflare | quad9 | alidns | doh.pub | URL",
+        })
+      ),
+      sources: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "passive 数据源：crt.sh、otx、wayback、all；默认域名 crt.sh+wayback，IP crt.sh+otx",
+        })
+      ),
       timeout_seconds: Type.Optional(
         Type.Number({ description: "passive 模式超时秒数，默认 25" })
       ),
@@ -601,7 +1099,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       const mode = (params.mode ?? "records").trim().toLowerCase();
-      if (mode === "records") return runRecords(raw, params);
+      if (mode === "records") return runRecords(raw, params, signal);
       if (mode === "passive") return runPassive(raw, params, signal);
 
       return {

@@ -37,16 +37,16 @@ Just count how many nginx servers are in China
 For full parameters and the aggregation field whitelist, see `skills/fofa-stats/SKILL.md`.
 
 ### DNS Lookup (`dns_lookup`)
-One tool with two modes. `mode=records` (default) queries DNS records without
-external API keys; `mode=passive` pulls passive DNS / certificate transparency
-data via crt.sh + SecurityTrails.
+One tool with two modes. `mode=records` (default) queries DNS records over the
+system resolver or DoH (DNSSEC AD flag included); `mode=passive` pulls passive
+DNS data via crt.sh, Wayback, OTX (IP path) and optional SecurityTrails.
 
 ```bash
 # Query A records
 Look up DNS for example.com
 
-# Query MX records
-Find mail servers for example.com
+# Query over DoH with DNSSEC status
+Resolve example.com A record via DoH
 
 # Find subdomains via passive DNS
 Find all subdomains of example.com ever resolved
@@ -55,21 +55,22 @@ Find all subdomains of example.com ever resolved
 Find domains associated with IP 1.2.3.4
 ```
 
-See `skills/dns-lookup/SKILL.md` for all record types, passive-mode data sources
-and the optional SecurityTrails key.
+See `skills/dns-lookup/SKILL.md` for record types, transport/source options and
+the optional SecurityTrails/DoH configuration.
 
 ### Network Lookup (`net_lookup`)
-One tool with three modes. `mode=bgp` queries ASN/prefix and classifies
-access-vs-infrastructure; `mode=whois` queries RDAP/WHOIS registration (IP and
-domain, JPNIC aware); `mode=all` runs both and cross-checks ownership.
+One tool with three modes. `mode=bgp` queries ASN/prefix via RIPEstat (Team
+Cymru and BGPView as fallbacks) and adds RPKI status; `mode=whois` queries
+RDAP/WHOIS registration (IP and domain, JPNIC aware); `mode=all` runs both,
+cross-checks ownership and enriches with Shodan InternetDB.
 `mode=auto` (default) uses `all` for IPs and `whois` for domains.
 
 ```bash
-# Combined IP attribution (BGP + RDAP)
+# Combined IP attribution (routing + RDAP + InternetDB)
 Who owns 8.8.8.8?
 
-# Routing only
-Find AS information for 8.8.8.8
+# Routing only, with RPKI
+Find AS and RPKI status for 8.8.8.8
 
 # Registration only
 Find who owns example.com
@@ -79,7 +80,7 @@ See `skills/net-lookup/SKILL.md` for gateway options, field reference and the
 combined assessment rules.
 
 ### Passive DNS (`dns_lookup` with `mode=passive`)
-Historical DNS data via crt.sh + SecurityTrails — covered by the `dns_lookup`
+Historical DNS data via crt.sh, Wayback and OTX — covered by the `dns_lookup`
 tool above.
 
 ### HTTPX Probe (`httpx_probe`)
@@ -103,7 +104,7 @@ overrides the path). Credentials are not read from the environment anywhere.
   "redteam": {
     "fofa": { "key": "your-key", "baseUrl": "https://fofa.info" },
     "httpx": { "binary": "/path/to/httpx", "proxy": "socks5://127.0.0.1:1080" },
-    "dns-lookup": { "securityTrailsKey": "your-securitytrails-key" },
+    "dns-lookup": { "securityTrailsKey": "your-securitytrails-key", "dohServer": "auto" },
     "net-lookup": {}
   }
 }

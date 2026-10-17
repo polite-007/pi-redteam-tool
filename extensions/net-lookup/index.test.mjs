@@ -3,7 +3,8 @@
  *
  * Run with: `node --test extensions/net-lookup/index.test.mjs`
  *
- * No network is touched — BGPView, RDAP and JPNIC are all stubbed or bypassed.
+ * No network is touched — RIPEstat, BGPView, Team Cymru, InternetDB, RDAP and
+ * JPNIC are all stubbed or bypassed.
  */
 
 import { test } from "node:test";
@@ -12,8 +13,12 @@ import registerNetLookup, {
   assessNetwork,
   buildLookupPlan,
   classifyBgpUsage,
+  cymruQueryName,
   normalizeGateway,
   normalizeMode,
+  parseCymruAsn,
+  parseCymruOrigin,
+  parseInternetDb,
   parseJpnicWhois,
   parseVcard,
   prefixLengthFromCidr,
@@ -22,6 +27,7 @@ import registerNetLookup, {
   resolveIp,
   summarizeBgpView,
   summarizeRdap,
+  summarizeRipestat,
 } from "./index.ts";
 
 /* ------------------------------------------------------------------ *
@@ -96,6 +102,7 @@ test("classifyBgpUsage: access, infrastructure, ambiguous and unknown", () => {
     classifyBgpUsage({ asnName: "Broadband Backbone", prefixLen: 18 }).classification,
     "transit_or_isp"
   );
+  assert.equal(classifyBgpUsage({ prefixLen: 24 }).classification, "unknown");
   assert.equal(classifyBgpUsage({ prefixLen: 20 }).classification, "unknown");
 });
 
@@ -296,7 +303,7 @@ function registeredTool() {
   return tool;
 }
 
-test("tool: invalid mode, missing target and IPv6 bgp are rejected", async () => {
+test("tool: invalid mode, missing target and domain bgp are rejected", async () => {
   const tool = registeredTool();
   assert.equal(tool.name, "net_lookup");
 
@@ -306,8 +313,8 @@ test("tool: invalid mode, missing target and IPv6 bgp are rejected", async () =>
   const badMode = await tool.execute("2", { target: "1.2.3.4", mode: "nope" });
   assert.match(badMode.content[0].text, /不支持的 mode/);
 
-  const ipv6Bgp = await tool.execute("3", { target: "2001:db8::1", mode: "bgp" });
-  assert.match(ipv6Bgp.content[0].text, /仅支持 IPv4/);
+  const domainBgp = await tool.execute("3", { target: "example.com", mode: "bgp" });
+  assert.match(domainBgp.content[0].text, /仅支持 IP/);
 });
 
 test("tool: all mode rejects domains and raw output", async () => {
@@ -320,45 +327,67 @@ test("tool: all mode rejects domains and raw output", async () => {
   assert.match(raw.content[0].text, /raw=true/);
 });
 
-test("tool: all mode merges BGP and RDAP with mocked sources", async () => {
+test("tool: all mode merges routing, RDAP and InternetDB", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
+  const json = (body, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+
   globalThis.fetch = async (url) => {
-    calls.push(String(url));
-    if (String(url).includes("bgpview")) {
-      return new Response(
-        JSON.stringify({
-          data: {
-            ip: "1.2.3.4",
-            prefixes: [
-              {
-                prefix: "1.2.3.0/24",
-                asn: { asn: 64500, name: "Example Broadband", country_code: "JP" },
-              },
-            ],
-            rir_allocation: { rir_name: "APNIC" },
-          },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      );
+    const u = String(url);
+    calls.push(u);
+    if (u.includes("stat.ripe.net/data/prefix-overview")) {
+      return json({
+        data: {
+          resource: "1.2.3.0/24",
+          announced: true,
+          asns: [{ asn: 64500, holder: "Example Broadband" }],
+          related_prefixes: ["1.2.3.0/24"],
+          block: { resource: "1.0.0.0/8" },
+        },
+      });
     }
-    return new Response(
-      JSON.stringify({
-        objectClassName: "ip network",
-        handle: "NET-1-2-3-0-1",
-        name: "Example Broadband",
-        country: "JP",
-        startAddress: "1.2.3.0",
-        endAddress: "1.2.3.255",
-        entities: [
-          {
-            roles: ["registrant"],
-            vcardArray: ["vcard", [["org", {}, "text", "Example Broadband"]]],
-          },
-        ],
-      }),
-      { status: 200, headers: { "content-type": "application/json" } }
-    );
+    if (u.includes("stat.ripe.net/data/rpki-validation")) {
+      return json({
+        data: {
+          status: "valid",
+          validating_roas: [
+            { origin: "64500", prefix: "1.2.3.0/24", validity: "valid", max_length: 24 },
+          ],
+        },
+      });
+    }
+    if (u.includes("internetdb.shodan.io")) {
+      return json({
+        ip: "1.2.3.4",
+        ports: [80, 443],
+        hostnames: ["example.com"],
+        cpes: [],
+        tags: ["cloud"],
+        vulns: [],
+      });
+    }
+    if (u.includes("cymru.com")) {
+      // Team Cymru is optional enrichment; RIPEstat already answered.
+      return json({ Status: 3 });
+    }
+    return json({
+      objectClassName: "ip network",
+      handle: "NET-1-2-3-0-1",
+      name: "Example Broadband",
+      country: "JP",
+      startAddress: "1.2.3.0",
+      endAddress: "1.2.3.255",
+      entities: [
+        {
+          roles: ["registrant"],
+          vcardArray: ["vcard", [["org", {}, "text", "Example Broadband"]]],
+        },
+      ],
+    });
   };
 
   try {
@@ -367,51 +396,162 @@ test("tool: all mode merges BGP and RDAP with mocked sources", async () => {
 
     assert.equal(result.isError, false);
     assert.equal(result.details.lookup, "all");
+    assert.equal(result.details.route.source, "ripestat");
     assert.equal(result.details.route.asn, "AS64500");
     assert.equal(result.details.route.classification, "customer_access");
+    assert.equal(result.details.route.rpki.status, "valid");
     assert.equal(result.details.registration.name, "Example Broadband");
+    assert.deepEqual(result.details.internetdb.ports, [80, 443]);
+    assert.deepEqual(result.details.internetdb.tags, ["cloud"]);
     assert.equal(result.details.assessment.consistent, true);
     assert.deepEqual(
       result.details.sources.map((s) => [s.provider, s.ok]),
       [
-        ["bgpview", true],
+        ["ripestat", true],
         ["rdap", true],
+        ["shodan-internetdb", true],
       ]
     );
-    assert.ok(calls.some((u) => u.includes("bgpview")));
-    assert.ok(calls.some((u) => u.includes("rdap")));
+    assert.ok(calls.some((u) => u.includes("stat.ripe.net")));
+    assert.ok(calls.some((u) => u.includes("internetdb.shodan.io")));
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("tool: IPv6 in all mode skips BGP and keeps RDAP", async () => {
+test("tool: IPv6 all mode uses RIPEstat and keeps RDAP", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response(
-      JSON.stringify({
-        objectClassName: "ip network",
-        handle: "NET-V6",
-        name: "Example IPv6",
-        entities: [
-          {
-            roles: ["registrant"],
-            vcardArray: ["vcard", [["org", {}, "text", "Example IPv6"]]],
-          },
-        ],
-      }),
-      { status: 200, headers: { "content-type": "application/json" } }
-    );
+  const json = (body, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("stat.ripe.net/data/prefix-overview")) {
+      return json({
+        data: {
+          resource: "2001:db8::/32",
+          announced: true,
+          asns: [{ asn: 64500, holder: "Example IPv6" }],
+          block: { resource: "2001::/16" },
+        },
+      });
+    }
+    if (u.includes("stat.ripe.net/data/rpki-validation")) {
+      return json({ data: { status: "valid" } });
+    }
+    if (u.includes("cymru.com")) return json({ Status: 3 });
+    return json({
+      objectClassName: "ip network",
+      handle: "NET-V6",
+      name: "Example IPv6",
+      entities: [
+        {
+          roles: ["registrant"],
+          vcardArray: ["vcard", [["org", {}, "text", "Example IPv6"]]],
+        },
+      ],
+    });
+  };
 
   try {
     const tool = registeredTool();
     const result = await tool.execute("1", { target: "2001:db8::1", mode: "all" }, undefined);
 
     assert.equal(result.isError, false);
-    assert.equal(result.details.route, undefined);
-    assert.equal(result.details.sources[0].skipped, true);
+    assert.equal(result.details.route.source, "ripestat");
+    assert.equal(result.details.route.prefix, "2001:db8::/32");
+    assert.equal(result.details.sources[0].provider, "ripestat");
+    assert.equal(result.details.sources[2].skipped, true);
     assert.equal(result.details.registration.name, "Example IPv6");
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+/* ------------------------------------------------------------------ *
+ * routing / InternetDB helpers
+ * ------------------------------------------------------------------ */
+
+test("summarizeRipestat: maps prefix, ASN, announced and classification", () => {
+  const summary = summarizeRipestat("1.2.3.4", {
+    data: {
+      resource: "1.2.3.0/24",
+      announced: true,
+      is_less_specific: false,
+      asns: [{ asn: 64500, holder: "Example Broadband" }],
+      related_prefixes: ["1.2.3.0/24"],
+      block: { resource: "1.0.0.0/8", desc: "Administered by APNIC" },
+    },
+  });
+
+  assert.equal(summary.asn, "AS64500");
+  assert.equal(summary.asnNumber, 64500);
+  assert.equal(summary.prefix, "1.2.3.0/24");
+  assert.equal(summary.classification, "customer_access");
+  assert.equal(summary.source, "ripestat");
+  assert.equal(summary.announced, true);
+  assert.deepEqual(summary.prefixes, [{ prefix: "1.2.3.0/24" }]);
+});
+
+test("cymruQueryName: IPv4 octets and IPv6 nibbles", () => {
+  assert.equal(cymruQueryName("8.8.8.8"), "8.8.8.8.origin.asn.cymru.com");
+  assert.equal(
+    cymruQueryName("2001:db8::1"),
+    cymruQueryName("2001:db8:0:0:0:0:0:1")
+  );
+  assert.match(
+    cymruQueryName("2001:db8::1"),
+    /^1\.0\.0\.0\..*\.8\.b\.d\.0\.1\.0\.0\.2\.origin6\.asn\.cymru\.com$/
+  );
+});
+
+test("parseCymruOrigin and parseCymruAsn: split TXT records", () => {
+  assert.deepEqual(
+    parseCymruOrigin("15169 | 8.8.8.0/24 | US | arin | 2023-12-28"),
+    {
+      asn: 15169,
+      prefix: "8.8.8.0/24",
+      country: "US",
+      rir: "arin",
+      allocated: "2023-12-28",
+    }
+  );
+
+  assert.deepEqual(
+    parseCymruAsn("15169 | US | arin | 2010-07-14 | GOOGLE - Google LLC, US"),
+    {
+      country: "US",
+      rir: "arin",
+      allocated: "2010-07-14",
+      name: "GOOGLE - Google LLC, US",
+    }
+  );
+});
+
+test("parseInternetDb: normalizes ports and string lists", () => {
+  assert.deepEqual(
+    parseInternetDb(
+      {
+        ip: "8.8.8.8",
+        ports: [443, 53, 443],
+        hostnames: ["dns.google", "dns.google", ""],
+        cpes: ["cpe:/a:example"],
+        tags: ["cdn"],
+        vulns: ["CVE-2024-0001"],
+      },
+      "8.8.8.8"
+    ),
+    {
+      ip: "8.8.8.8",
+      ports: [53, 443],
+      hostnames: ["dns.google"],
+      cpes: ["cpe:/a:example"],
+      tags: ["cdn"],
+      vulns: ["CVE-2024-0001"],
+    }
+  );
+  assert.equal(parseInternetDb(null, "1.2.3.4"), null);
 });

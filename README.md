@@ -10,9 +10,9 @@ Red team reconnaissance tools for [Pi Coding Agent](https://pi.dev).
 | [fofa-host](extensions/fofa-host) | `fofa_host` | FOFA host/asset query |
 | [fofa-stats](extensions/fofa-stats) | `fofa_stats` | FOFA statistics aggregation (scale & distribution) |
 | [wx-article](extensions/wx-article) | `wx_article` | WeChat public article fetcher |
-| [dns-lookup](extensions/dns-lookup) | `dns_lookup` | DNS records (mode=records) + passive DNS/CT lookup (mode=passive) |
+| [dns-lookup](extensions/dns-lookup) | `dns_lookup` | DNS records (DoH + DNSSEC) + passive DNS (crt.sh/OTX/Wayback) |
 | [httpx-probe](extensions/httpx-probe) | `httpx_probe` | HTTP probe with ProjectDiscovery httpx |
-| [net-lookup](extensions/net-lookup) | `net_lookup` | BGP/ASN routing + RDAP/WHOIS registration, with combined attribution |
+| [net-lookup](extensions/net-lookup) | `net_lookup` | RIPEstat/Team Cymru routing + RPKI + RDAP/WHOIS + InternetDB |
 
 ## Installation
 
@@ -44,7 +44,8 @@ key, proxy or path a tool uses is always the one the file names.
       "proxy": "socks5://127.0.0.1:1080"
     },
     "dns-lookup": {
-      "securityTrailsKey": "your-securitytrails-key"
+      "securityTrailsKey": "your-securitytrails-key",
+      "dohServer": "auto"
     },
     "net-lookup": {}
   }
@@ -61,6 +62,7 @@ Configuration is grouped by tool under `redteam`: `fofa`, `httpx`,
 | `httpx.binary` | `httpx_probe` | no | Path to the httpx binary (default: `httpx` from `PATH`) |
 | `httpx.proxy` | `httpx_probe` | no | Proxy passed to httpx (default: none) |
 | `dns-lookup.securityTrailsKey` | `dns_lookup` (`mode=passive`) | no | SecurityTrails key; without it IP lookups fall back to HackerTarget |
+| `dns-lookup.dohServer` | `dns_lookup` (`transport=doh/auto`) | no | DoH preset or URL (default `auto`: doh.pub → alidns → google → cloudflare) |
 | `net-lookup` | `net_lookup` | no | Reserved; no options yet |
 
 The remaining tools (`dns_lookup`, `net_lookup`, `wx_article`) need no
