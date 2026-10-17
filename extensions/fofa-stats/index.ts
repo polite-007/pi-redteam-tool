@@ -250,7 +250,6 @@ export default function (pi: ExtensionAPI) {
       // `fields` is optional to FOFA — omitting it asks for the total only.
       if (fields.length) url.searchParams.set("fields", fields.join(","));
       url.searchParams.set("key", cfg.key);
-      if (cfg.email) url.searchParams.set("email", cfg.email);
 
       const controller = new AbortController();
       const onAbort = () => controller.abort();

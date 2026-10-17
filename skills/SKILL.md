@@ -37,7 +37,9 @@ Just count how many nginx servers are in China
 For full parameters and the aggregation field whitelist, see `skills/fofa-stats/SKILL.md`.
 
 ### DNS Lookup (`dns_lookup`)
-Query DNS records without external API keys.
+One tool with two modes. `mode=records` (default) queries DNS records without
+external API keys; `mode=passive` pulls passive DNS / certificate transparency
+data via crt.sh + SecurityTrails.
 
 ```bash
 # Query A records
@@ -45,31 +47,40 @@ Look up DNS for example.com
 
 # Query MX records
 Find mail servers for example.com
+
+# Find subdomains via passive DNS
+Find all subdomains of example.com ever resolved
+
+# Reverse-IP via passive DNS
+Find domains associated with IP 1.2.3.4
 ```
 
-### BGP Lookup (`bgp_lookup`)
-Query BGP/ASN information via BGPView API.
+See `skills/dns-lookup/SKILL.md` for all record types, passive-mode data sources
+and the optional SecurityTrails key.
+
+### Network Lookup (`net_lookup`)
+One tool with three modes. `mode=bgp` queries ASN/prefix and classifies
+access-vs-infrastructure; `mode=whois` queries RDAP/WHOIS registration (IP and
+domain, JPNIC aware); `mode=all` runs both and cross-checks ownership.
+`mode=auto` (default) uses `all` for IPs and `whois` for domains.
 
 ```bash
-# Lookup AS number
+# Combined IP attribution (BGP + RDAP)
+Who owns 8.8.8.8?
+
+# Routing only
 Find AS information for 8.8.8.8
-```
 
-### WHOIS/RDAP (`whois_rdap`)
-Domain registration lookup via RDAP/WHOIS.
-
-```bash
-# Lookup domain registration
+# Registration only
 Find who owns example.com
 ```
 
-### Passive DNS (`passive_dns`)
-Historical DNS data via crt.sh + SecurityTrails.
+See `skills/net-lookup/SKILL.md` for gateway options, field reference and the
+combined assessment rules.
 
-```bash
-# Find subdomains
-Find all subdomains of example.com ever resolved
-```
+### Passive DNS (`dns_lookup` with `mode=passive`)
+Historical DNS data via crt.sh + SecurityTrails — covered by the `dns_lookup`
+tool above.
 
 ### HTTPX Probe (`httpx_probe`)
 HTTP probing with ProjectDiscovery httpx.
@@ -90,12 +101,17 @@ overrides the path). Credentials are not read from the environment anywhere.
 ```json
 {
   "redteam": {
-    "fofa": { "key": "your-key", "email": "you@example.com", "baseUrl": "https://fofa.info" },
+    "fofa": { "key": "your-key", "baseUrl": "https://fofa.info" },
     "httpx": { "binary": "/path/to/httpx", "proxy": "socks5://127.0.0.1:1080" },
-    "passiveDns": { "securityTrailsKey": "your-securitytrails-key" }
+    "dns-lookup": { "securityTrailsKey": "your-securitytrails-key" },
+    "net-lookup": {}
   }
 }
 ```
+
+Configuration is grouped by tool under `redteam`: `fofa`, `httpx`,
+`dns-lookup`, `net-lookup`. `net-lookup` currently has no options and is a
+reserved placeholder.
 
 `fofa.key` is the only required value. When a tool finds it unconfigured it
 says so (FOFA tools return `FOFA_NOT_CONFIGURED`) and names the settings file to

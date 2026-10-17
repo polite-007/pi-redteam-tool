@@ -215,7 +215,6 @@ async function fofaSearch(
   url.searchParams.set("size", String(capSize(options.fields, options.size)));
   url.searchParams.set("fields", options.fields);
   url.searchParams.set("key", cfg.key);
-  if (cfg.email) url.searchParams.set("email", cfg.email);
 
   const res = await fetch(url, { signal: options.signal });
   if (!res.ok) {

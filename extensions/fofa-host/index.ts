@@ -80,7 +80,6 @@ export default function (pi: ExtensionAPI) {
       const url = new URL(`api/v1/host/${encodeURIComponent(host)}`, base);
       url.searchParams.set("detail", detail ? "true" : "false");
       url.searchParams.set("key", cfg.key);
-      if (cfg.email) url.searchParams.set("email", cfg.email);
 
       const controller = new AbortController();
       const onAbort = () => controller.abort();

@@ -41,17 +41,16 @@ query="port=80" size=50 fields="ip,port,country,title"
   "redteam": {
     "fofa": {
       "key": "your-fofa-key",
-      "email": "your-email@example.com",
       "baseUrl": "https://fofa.info"
     }
   }
 }
 ```
 
-`baseUrl` 省略时默认 `https://fofa.info`；`email` 可选；`key` 缺失时工具返回
+`baseUrl` 省略时默认 `https://fofa.info`；`key` 缺失时工具返回
 `FOFA_NOT_CONFIGURED`，并在错误信息里给出需要编辑的配置文件路径。
 
-> 环境变量 `REDTEAM_FOFA_KEY` / `REDTEAM_FOFA_EMAIL` / `REDTEAM_FOFA_BASE_URL`
+> 环境变量 `REDTEAM_FOFA_KEY` / `REDTEAM_FOFA_BASE_URL`
 > **不再被读取**，配置只认配置文件这一个来源。
 
 ## FOFA 查询语法参考

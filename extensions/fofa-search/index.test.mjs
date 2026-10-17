@@ -44,7 +44,6 @@ import { fofaNotConfiguredError } from "../../_shared/fofa-config.ts";
 
 const FOFA_ENV_KEYS = [
   "REDTEAM_FOFA_KEY",
-  "REDTEAM_FOFA_EMAIL",
   "REDTEAM_FOFA_BASE_URL",
   "PI_SETTINGS_PATH",
 ];
@@ -94,14 +93,13 @@ function tempSettings(content) {
  * loadFofaConfig — settings.json only, no environment fallback
  * ------------------------------------------------------------------ */
 
-test("loadFofaConfig: reads key, email and baseUrl from settings.json", () => {
+test("loadFofaConfig: reads key and baseUrl from settings.json", () => {
   withEnv(() => {
     const { file, dir } = tempSettings(
       JSON.stringify({
         redteam: {
           fofa: {
             key: "from-settings",
-            email: "s@example.com",
             baseUrl: "https://mirror.example",
           },
         },
@@ -112,7 +110,6 @@ test("loadFofaConfig: reads key, email and baseUrl from settings.json", () => {
 
       assert.deepEqual(loadFofaConfig(), {
         key: "from-settings",
-        email: "s@example.com",
         baseUrl: "https://mirror.example",
       });
     } finally {
@@ -131,7 +128,6 @@ test("loadFofaConfig: baseUrl falls back to the official endpoint", () => {
 
       assert.deepEqual(loadFofaConfig(), {
         key: "from-settings",
-        email: undefined,
         baseUrl: "https://fofa.info",
       });
     } finally {
@@ -150,13 +146,11 @@ test("loadFofaConfig: ignores the REDTEAM_FOFA_* environment variables", () => {
     );
     try {
       process.env.REDTEAM_FOFA_KEY = "from-env";
-      process.env.REDTEAM_FOFA_EMAIL = "env@example.com";
       process.env.REDTEAM_FOFA_BASE_URL = "https://env.example";
       process.env.PI_SETTINGS_PATH = file;
 
       assert.deepEqual(loadFofaConfig(), {
         key: "from-settings",
-        email: undefined,
         baseUrl: "https://fofa.info",
       });
     } finally {
@@ -186,11 +180,11 @@ test("loadFofaConfig: a whitespace-only key in settings is treated as absent", (
   });
 });
 
-test("loadFofaConfig: trims the key and baseUrl, and drops a blank email", () => {
+test("loadFofaConfig: trims the key and baseUrl, and ignores email", () => {
   withEnv(() => {
     const { file, dir } = tempSettings(
       JSON.stringify({
-        redteam: { fofa: { key: "  k  ", email: "   ", baseUrl: "  https://m.example  " } },
+        redteam: { fofa: { key: "  k  ", email: "ignored@example.com", baseUrl: "  https://m.example  " } },
       }),
     );
     try {
@@ -198,7 +192,6 @@ test("loadFofaConfig: trims the key and baseUrl, and drops a blank email", () =>
 
       assert.deepEqual(loadFofaConfig(), {
         key: "k",
-        email: undefined,
         baseUrl: "https://m.example",
       });
     } finally {

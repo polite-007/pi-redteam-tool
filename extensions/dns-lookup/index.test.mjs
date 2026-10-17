@@ -1,10 +1,11 @@
 /**
- * Tests for the passive_dns extension's SecurityTrails key resolution.
+ * Tests for the dns_lookup extension's SecurityTrails key resolution.
  *
- * Run with: `node --test extensions/passive-dns/index.test.mjs`
+ * Run with: `node --test extensions/dns-lookup/index.test.mjs`
  *
- * Scope: the key lookup, which used to prefer the REDTEAM_PASSIVE_DNS_KEY
- * environment variable over settings.json and now reads settings.json only.
+ * Scope: the key lookup used by passive mode, which used to prefer the
+ * REDTEAM_PASSIVE_DNS_KEY environment variable over settings.json and now
+ * reads settings.json only.
  *
  * No network is touched — `loadSecurityTrailsKey` is config-only.
  *
@@ -32,10 +33,10 @@ const ENV_KEYS = [
  * test can read the developer's real ~/.pi/agent/settings.json and pass or
  * fail depending on the machine it runs on.
  */
-const NO_SETTINGS_FILE = join(tmpdir(), "passive-dns-must-not-be-read.json");
+const NO_SETTINGS_FILE = join(tmpdir(), "dns-must-not-be-read.json");
 
 /**
- * Clear the passive-dns env vars, run `body` against a settings file, then
+ * Clear the dns env vars, run `body` against a settings file, then
  * always restore — deleting vars that were absent to begin with, since
  * assigning `undefined` would leave the literal string "undefined" behind.
  *
@@ -49,7 +50,7 @@ function withSettings(body, settings = null) {
     delete process.env[key];
   }
 
-  const dir = settings === null ? null : mkdtempSync(join(tmpdir(), "passive-dns-settings-"));
+  const dir = settings === null ? null : mkdtempSync(join(tmpdir(), "dns-settings-"));
   const file = dir === null ? NO_SETTINGS_FILE : join(dir, "settings.json");
   if (dir !== null) writeFileSync(file, settings, "utf8");
   process.env.PI_SETTINGS_PATH = file;
@@ -65,9 +66,9 @@ function withSettings(body, settings = null) {
   }
 }
 
-/** Shorthand: a settings file containing just the given passiveDns block. */
-function withPassiveDns(body, passiveDns) {
-  withSettings(body, JSON.stringify({ redteam: { passiveDns } }));
+/** Shorthand: a settings file containing just the given dns-lookup block. */
+function withDnsLookup(body, dnsLookup) {
+  withSettings(body, JSON.stringify({ redteam: { "dns-lookup": dnsLookup } }));
 }
 
 /* ------------------------------------------------------------------ *
@@ -80,31 +81,37 @@ test("loadSecurityTrailsKey: undefined when no settings file exists", () => {
   });
 });
 
-test("loadSecurityTrailsKey: reads redteam.passiveDns.securityTrailsKey", () => {
-  withPassiveDns(() => {
+test("loadSecurityTrailsKey: reads redteam.dns-lookup.securityTrailsKey", () => {
+  withDnsLookup(() => {
     assert.equal(loadSecurityTrailsKey(), "st-key");
   }, { securityTrailsKey: "st-key" });
 });
 
 test("loadSecurityTrailsKey: trims the key", () => {
-  withPassiveDns(() => {
+  withDnsLookup(() => {
     assert.equal(loadSecurityTrailsKey(), "st-key");
   }, { securityTrailsKey: "  st-key  " });
 });
 
 test("loadSecurityTrailsKey: a blank or non-string key is not configuration", () => {
-  withPassiveDns(() => assert.equal(loadSecurityTrailsKey(), undefined), {
+  withDnsLookup(() => assert.equal(loadSecurityTrailsKey(), undefined), {
     securityTrailsKey: "   ",
   });
-  withPassiveDns(() => assert.equal(loadSecurityTrailsKey(), undefined), {
+  withDnsLookup(() => assert.equal(loadSecurityTrailsKey(), undefined), {
     securityTrailsKey: 12345,
   });
+});
+
+test("loadSecurityTrailsKey: the old redteam.passiveDns section is ignored", () => {
+  withSettings(() => {
+    assert.equal(loadSecurityTrailsKey(), undefined);
+  }, JSON.stringify({ redteam: { passiveDns: { securityTrailsKey: "old-key" } } }));
 });
 
 test("loadSecurityTrailsKey: ignores REDTEAM_PASSIVE_DNS_KEY", () => {
   // The regression this change exists for: the env var used to win over the
   // settings file, and to be used when the file had nothing.
-  withPassiveDns(() => {
+  withDnsLookup(() => {
     process.env.REDTEAM_PASSIVE_DNS_KEY = "from-env";
     assert.equal(loadSecurityTrailsKey(), "from-settings");
   }, { securityTrailsKey: "from-settings" });

@@ -28,7 +28,6 @@ import { loadFofaConfig, resolveHost } from "./index.ts";
 
 const FOFA_ENV_KEYS = [
   "REDTEAM_FOFA_KEY",
-  "REDTEAM_FOFA_EMAIL",
   "REDTEAM_FOFA_BASE_URL",
   "PI_SETTINGS_PATH",
 ];
@@ -127,7 +126,6 @@ test("loadFofaConfig: reads the key from settings.json", () => {
       process.env.PI_SETTINGS_PATH = file;
       assert.deepEqual(loadFofaConfig(), {
         key: "from-settings",
-        email: undefined,
         baseUrl: "https://fofa.info",
       });
     } finally {

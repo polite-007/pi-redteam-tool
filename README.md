@@ -10,11 +10,9 @@ Red team reconnaissance tools for [Pi Coding Agent](https://pi.dev).
 | [fofa-host](extensions/fofa-host) | `fofa_host` | FOFA host/asset query |
 | [fofa-stats](extensions/fofa-stats) | `fofa_stats` | FOFA statistics aggregation (scale & distribution) |
 | [wx-article](extensions/wx-article) | `wx_article` | WeChat public article fetcher |
-| [bgp-lookup](extensions/bgp-lookup) | `bgp_lookup` | BGP/ASN lookup via BGPView API |
-| [dns-lookup](extensions/dns-lookup) | `dns_lookup` | DNS record query (A/AAAA/PTR/NS/MX/TXT/CNAME/SOA/SRV/CAA) |
+| [dns-lookup](extensions/dns-lookup) | `dns_lookup` | DNS records (mode=records) + passive DNS/CT lookup (mode=passive) |
 | [httpx-probe](extensions/httpx-probe) | `httpx_probe` | HTTP probe with ProjectDiscovery httpx |
-| [passive-dns](extensions/passive-dns) | `passive_dns` | Passive DNS via crt.sh + SecurityTrails |
-| [whois-rdap](extensions/whois-rdap) | `whois_rdap` | WHOIS/RDAP domain registration lookup |
+| [net-lookup](extensions/net-lookup) | `net_lookup` | BGP/ASN routing + RDAP/WHOIS registration, with combined attribution |
 
 ## Installation
 
@@ -39,31 +37,37 @@ key, proxy or path a tool uses is always the one the file names.
   "redteam": {
     "fofa": {
       "key": "your-fofa-api-key",
-      "email": "your-email@example.com",
       "baseUrl": "https://fofa.info"
     },
     "httpx": {
       "binary": "/path/to/httpx",
       "proxy": "socks5://127.0.0.1:1080"
     },
-    "passiveDns": {
+    "dns-lookup": {
       "securityTrailsKey": "your-securitytrails-key"
-    }
+    },
+    "net-lookup": {}
   }
 }
 ```
 
+Configuration is grouped by tool under `redteam`: `fofa`, `httpx`,
+`dns-lookup`, `net-lookup`. Keys in the table are relative to `redteam`.
+
 | Key | Used by | Required | Description |
 |-----|---------|----------|-------------|
 | `fofa.key` | `fofa_search`, `fofa_host`, `fofa_stats` | yes | FOFA API key; without it the tools report `FOFA_NOT_CONFIGURED` |
-| `fofa.email` | FOFA tools | no | FOFA account email |
 | `fofa.baseUrl` | FOFA tools | no | FOFA API base URL (default: `https://fofa.info`) |
 | `httpx.binary` | `httpx_probe` | no | Path to the httpx binary (default: `httpx` from `PATH`) |
 | `httpx.proxy` | `httpx_probe` | no | Proxy passed to httpx (default: none) |
-| `passiveDns.securityTrailsKey` | `passive_dns` | no | SecurityTrails key; without it IP lookups fall back to HackerTarget |
+| `dns-lookup.securityTrailsKey` | `dns_lookup` (`mode=passive`) | no | SecurityTrails key; without it IP lookups fall back to HackerTarget |
+| `net-lookup` | `net_lookup` | no | Reserved; no options yet |
 
-The remaining tools (`bgp_lookup`, `dns_lookup`, `whois_rdap`, `wx_article`)
-need no configuration.
+The remaining tools (`dns_lookup`, `net_lookup`, `wx_article`) need no
+configuration.
+
+The old `redteam.passiveDns` section is no longer read; its key moved to
+`redteam.dns-lookup`.
 
 ### Environment Variables
 

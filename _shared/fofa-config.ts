@@ -1,9 +1,9 @@
 /**
  * Shared FOFA credential/config loading for the FOFA extensions.
  *
- * Source: settings.json only — `redteam.fofa.{key,email,baseUrl}`. The file
+ * Source: settings.json only — `redteam.fofa.{key,baseUrl}`. The file
  * itself is located by `_shared/settings.ts`, which also documents why the
- * `REDTEAM_FOFA_KEY` / `REDTEAM_FOFA_EMAIL` / `REDTEAM_FOFA_BASE_URL`
+ * `REDTEAM_FOFA_KEY` / `REDTEAM_FOFA_BASE_URL`
  * environment variables are no longer consulted: the account a tool spends
  * F-points on should not depend on which shell happened to launch the agent.
  *
@@ -23,7 +23,6 @@ export const DEFAULT_BASE = "https://fofa.info";
 
 export interface FofaConfig {
   key: string;
-  email?: string;
   baseUrl: string;
 }
 
@@ -60,7 +59,6 @@ export function loadFofaConfig(): FofaConfig | null {
 
   return {
     key,
-    email: getSettingString(settings, "redteam.fofa.email"),
     baseUrl: getSettingString(settings, "redteam.fofa.baseUrl") ?? DEFAULT_BASE,
   };
 }

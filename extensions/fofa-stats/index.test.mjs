@@ -34,7 +34,6 @@ import register from "./index.ts";
 
 const FOFA_ENV_KEYS = [
   "REDTEAM_FOFA_KEY",
-  "REDTEAM_FOFA_EMAIL",
   "REDTEAM_FOFA_BASE_URL",
   "PI_SETTINGS_PATH",
 ];
